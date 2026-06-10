@@ -20,7 +20,7 @@ from firefly_bot.labels import JsonlLabelStore, NullLabelStore, read_labels
 from firefly_bot.pipeline import run
 
 if TYPE_CHECKING:
-    from firefly_bot.enrich import Categoriser
+    from firefly_bot.enrich import Categoriser, Embedder
 
 log = logging.getLogger("firefly_bot")
 
@@ -110,6 +110,7 @@ def _import(camt_path: Path, *, dry_run: bool) -> int:
     # Mirror the ledger: suppress label writes on dry-run, otherwise accumulate to labels.jsonl.
     label_store = NullLabelStore() if dry_run else JsonlLabelStore(settings.labels_path)
     categoriser = _build_categoriser(settings)
+    merchant_embedder = _build_merchant_embedder(settings)
     with FireflyClient(settings.firefly) as client:
         summary = import_statement(
             statement,
@@ -121,6 +122,8 @@ def _import(camt_path: Path, *, dry_run: bool) -> int:
             label_store=label_store,
             categoriser=categoriser,
             needs_review_tag=settings.matching.needs_review_tag,
+            merchant_embedder=merchant_embedder,
+            merchant_gate=settings.enrich.merchant_gate,
         )
     label_store.close()
     prefix = "(dry-run) " if dry_run else ""
@@ -162,6 +165,21 @@ def _build_categoriser(settings: Settings) -> Categoriser | None:
         gate=settings.enrich.gate,
         knn_trust=settings.enrich.knn_trust,
     )
+
+
+def _build_merchant_embedder(settings: Settings) -> Embedder | None:
+    """Build the e5 embedder for Phase 2.3 merchant entity resolution, or None to skip it.
+
+    Lazy and opt-in: only when ``enrich.enabled`` AND ``enrich.merchant_resolution`` are both set
+    do we import the enrich package and construct the embedder — otherwise we return None and the
+    AccountResolver runs its historical IBAN/norm/fuzzy cascade with no model load. Kept OFF by
+    default because a false MERGE of two distinct merchants corrupts the ledger (see config).
+    """
+    if not (settings.enrich.enabled and settings.enrich.merchant_resolution):
+        return None
+    from firefly_bot.enrich import E5Embedder
+
+    return E5Embedder(model_name=settings.enrich.model_name)
 
 
 def _bootstrap(args: argparse.Namespace) -> int:

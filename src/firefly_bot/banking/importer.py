@@ -19,6 +19,7 @@ from firefly_bot.banking.accounts import AccountResolver, normalise_merchant
 from firefly_bot.banking.camt import BankStatement, BankTransaction, reconciles
 from firefly_bot.banking.mcc import category_for_mcc
 from firefly_bot.enrich.categoriser import Categoriser
+from firefly_bot.enrich.embedder import Embedder
 from firefly_bot.labels import LabelStore, NullLabelStore
 from firefly_bot.models import FireflyAccount, LabelRecord
 
@@ -158,6 +159,8 @@ def import_statement(
     label_store: LabelStore | None = None,
     categoriser: Categoriser | None = None,
     needs_review_tag: str = "needs-review",
+    merchant_embedder: Embedder | None = None,
+    merchant_gate: float = 0.93,
 ) -> ImportSummary:
     # Default to a no-op store on dry-run (mirrors the ledger), otherwise accumulate signal.
     store: LabelStore = label_store or NullLabelStore()
@@ -176,7 +179,10 @@ def import_statement(
         for iban in sorted(own)
     }
 
-    opposing = _resolve_opposing_accounts(statement, writer, set(savings), dry_run)
+    opposing = _resolve_opposing_accounts(
+        statement, writer, set(savings), dry_run,
+        merchant_embedder=merchant_embedder, merchant_gate=merchant_gate,
+    )
 
     created = duplicates = errors = transfers = 0
     for index, tx in enumerate(statement.transactions):
@@ -271,9 +277,17 @@ def _resolve_opposing_accounts(
     writer: StatementWriter,
     savings_ibans: set[str],
     dry_run: bool,
+    *,
+    merchant_embedder: Embedder | None = None,
+    merchant_gate: float = 0.93,
 ) -> dict[int, str]:
-    """Map each non-transfer transaction index to an opposing account id, creating as needed."""
-    resolver = AccountResolver()
+    """Map each non-transfer transaction index to an opposing account id, creating as needed.
+
+    With ``merchant_embedder`` set (Phase 2.3, opt-in), the resolver gets an embedding last-resort
+    step after IBAN/norm/fuzzy miss; without it (the default), resolution is the historical
+    IBAN/norm/fuzzy cascade.
+    """
+    resolver = AccountResolver(embedder=merchant_embedder, embedding_gate=merchant_gate)
     if not dry_run:
         for role in ("expense", "revenue"):
             resolver.prime(

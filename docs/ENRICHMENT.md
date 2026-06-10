@@ -111,12 +111,22 @@ source: "auto" | "user"
 
 ## Phase 2 — local embedding enricher (design, refined by the spike)
 
-**Status: 2.1 (categoriser cascade) and 2.2 (new-label discovery + active-learning order) DONE,**
-verified with the real e5 model (see `experiments/enrich_demo.py`, `experiments/discovery_demo.py`).
-Remaining: bootstrap importer, merchant entity resolution (2.3), wiring into the write path (2.4).
-Calibration learned in build: classify uses a two-threshold rule (confident k-NN ≥0.90 wins, else
-gated zero-shot ≥0.83, else weak k-NN is a review-only suggestion); discovery clusters at ≥0.90
-(e5's high floor chains below that). All knobs live in `EnrichSettings`.
+**Status: Phase 2 COMPLETE** (2.1 categoriser, 2.2 discovery, bootstrap, 2.4 import wiring, 2.3
+merchant resolution), plus Phase 1b correction capture. Verified with the real e5 model
+(`experiments/enrich_demo.py`, `experiments/discovery_demo.py`). Calibration learned in build:
+classify uses a two-threshold rule (confident k-NN ≥0.90 wins, else gated zero-shot ≥0.83, else
+weak k-NN is a review-only suggestion); discovery clusters at ≥0.90 (e5's high floor chains below).
+All knobs live in `EnrichSettings`.
+
+**2.3 merchant resolution — shipped OFF by default (empirical negative result).** The probe
+(`experiments/merchant_resolution_probe.py`) showed e5 cannot separate Dutch merchant *variants*
+(0.77–0.89 vs "Albert Heijn") from *distinct* merchants (0.73–0.77) — they overlap, so no safe
+threshold exists. Wrongly merging two merchants corrupts the ledger, so it's opt-in behind a 0.93
+gate (never fires on this data); the IBAN/normalise/rapidfuzz cascade remains the default.
+
+**Remaining (future): Phase 3 (learned match scorer) and Phase 4 (recurring + local LLM).** Their
+data prerequisites are now in place: match negatives (1a), category corrections + `firefly_id`
+(1b), canonical merchants + provenance.
 
 **Spike result (`experiments/EMBEDDINGS_SPIKE.md`):** use **`fastembed` + `intfloat/multilingual-e5-small`**
 (384-dim, **MIT**). Measured ~**4.1 ms/embed** single (~1.4 ms batched) on CPU/Windows; **6/6** on

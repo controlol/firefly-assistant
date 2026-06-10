@@ -95,6 +95,20 @@ class EnrichSettings(BaseSettings):
     # similarity floor only separates distinct themes around there (single-link chains below it).
     discover_threshold: float = 0.90
     discover_min_size: int = 3
+    # Merchant entity resolution (Phase 2.3): use embeddings as the LAST resort in AccountResolver,
+    # AFTER IBAN-exact, normalise_merchant-exact, and rapidfuzz all miss, to collapse spelling
+    # variants of one merchant ("Albert Heijn" / "AH to go" / "Appie") onto one opposing account.
+    #
+    # OFF BY DEFAULT and deliberately conservative: wrongly MERGING two *distinct* merchants into
+    # one account corrupts the ledger and is far worse than harmless account proliferation. e5 has a
+    # high similarity floor (~0.84) with small inter-class margins, so naive embedding matching will
+    # false-merge. The probe (experiments/merchant_resolution_probe.py) showed distinct Dutch
+    # merchants also score high, so this stays opt-in behind a HIGH gate; only enable it if the
+    # probe numbers on your own data clear the gate with real margin.
+    merchant_resolution: bool = False
+    # Minimum cosine for the embedding step to reuse an existing account. High on purpose: a
+    # false MERGE is unrecoverable, a false MISS just makes a duplicate account.
+    merchant_gate: float = 0.93
 
 
 class Settings(BaseSettings):
