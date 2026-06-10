@@ -81,6 +81,9 @@ def parse_camt(path: Path) -> tuple[str, str, list[CamtEntry]]:
         tx = ntry.find("c:NtryDtls/c:TxDtls", _NS)
         name, iban, remit = _counterparty(tx)
         additional = ntry.findtext("c:AddtlNtryInf", namespaces=_NS)
+        if not name:
+            # Card/POS payments carry the merchant in AddtlNtryInf as "<name> > <location> ...".
+            name = _name_from_additional(additional)
         description = remit or additional or name or "Transactie"
         entries.append(
             CamtEntry(
@@ -93,6 +96,14 @@ def parse_camt(path: Path) -> tuple[str, str, list[CamtEntry]]:
             )
         )
     return account_iban, currency, entries
+
+
+def _name_from_additional(additional: str | None) -> str | None:
+    """Merchant name from ASN/RegioBank card-payment text: '<name>  > <location> <date> ...'."""
+    if not additional or ">" not in additional:
+        return None
+    head = re.sub(r"\s{2,}", " ", additional.split(">", 1)[0]).strip()
+    return head or None
 
 
 def _counterparty(tx: ET.Element | None) -> tuple[str | None, str | None, str | None]:
@@ -217,6 +228,23 @@ def seed(camt_path: Path, owner_name: str | None = None) -> None:
         )
 
 
+def _remove_from_dashboard(client: httpx.Client, account_ids: list[str]) -> None:
+    """Drop deleted account ids from the frontpageAccounts preference."""
+    if not account_ids:
+        return
+    try:
+        current = client.get("/api/v1/preferences/frontpageAccounts")
+        existing = (
+            current.json()["data"]["attributes"]["data"] if current.status_code == 200 else []
+        )
+        drop = set(account_ids)
+        remaining = [str(x) for x in existing if str(x) not in drop]
+        updated = client.put("/api/v1/preferences/frontpageAccounts", json={"data": remaining})
+        updated.raise_for_status()
+    except (httpx.HTTPError, KeyError, TypeError):  # best effort
+        pass
+
+
 def _all_accounts(client: httpx.Client, account_type: str) -> list[dict[str, object]]:
     out: list[dict[str, object]] = []
     page = 1
@@ -245,12 +273,14 @@ def reset() -> None:
             client.delete(f"/api/v1/transactions/{tid}").raise_for_status()
         print(f"Deleted {len(ids)} {_FIXTURE_TAG} transactions.")
 
-        removed_assets = 0
+        deleted_asset_ids: list[str] = []
         for account in _all_accounts(client, "asset"):
             attrs = account["attributes"]  # type: ignore[index]
             if _ACCOUNT_MARKER in attrs["name"]:
                 client.delete(f"/api/v1/accounts/{account['id']}").raise_for_status()
-                removed_assets += 1
+                deleted_asset_ids.append(str(account["id"]))
+        _remove_from_dashboard(client, deleted_asset_ids)
+        removed_assets = len(deleted_asset_ids)
 
         removed_opposing = 0
         for account_type in ("expense", "revenue"):
