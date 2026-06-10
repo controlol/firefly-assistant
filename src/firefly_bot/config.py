@@ -74,6 +74,29 @@ class BankSettings(BaseSettings):
     account_name: str = "Betaalrekening"
 
 
+class EnrichSettings(BaseSettings):
+    """Local embedding enricher (Phase 2). See docs/ENRICHMENT.md + docs/COLD_START.md."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ENRICH_", env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
+
+    enabled: bool = True
+    model_name: str = "intfloat/multilingual-e5-small"
+    # Absolute top-similarity gate (NOT margin): e5 gives high baseline similarities with small
+    # inter-category margins, so we threshold the absolute cosine. Below it -> needs-review.
+    gate: float = 0.83
+    # k-NN over a tiny example set yields spurious *near-floor* matches that can outrank the
+    # correct, curated label name. So k-NN only overrules a gated zero-shot label-name match when
+    # it is clearly confident (>= this); below it, the curated label name is trusted first.
+    knn_trust: float = 0.90
+    # New-label discovery (Phase 2.2): cosine link threshold for clustering orphan transactions,
+    # and the minimum cluster size before a missing category is proposed. 0.90 because e5's high
+    # similarity floor only separates distinct themes around there (single-link chains below it).
+    discover_threshold: float = 0.90
+    discover_min_size: int = 3
+
+
 class Settings(BaseSettings):
     """Top-level settings aggregating the sub-configs."""
 
@@ -83,12 +106,20 @@ class Settings(BaseSettings):
     firefly: FireflySettings = Field(default_factory=FireflySettings)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
     bank: BankSettings = Field(default_factory=BankSettings)
+    enrich: EnrichSettings = Field(default_factory=EnrichSettings)
 
     report_dir: str = "./reports"
+    # Append-only training data (Phase 1 label capture) lives under here, gitignored.
+    data_dir: str = "./data"
     # Rasterisation DPI for PDFs before OCR. 200 is a good accuracy/speed balance for invoices.
     ocr_dpi: int = 200
     # Only relevant to the optional PaddleOCR engine; RapidOCR (default) is CPU-only.
     ocr_use_gpu: bool = False
+
+    @property
+    def labels_path(self) -> str:
+        """Path to the append-only JSONL of captured decisions."""
+        return f"{self.data_dir}/labels.jsonl"
 
 
 def load_settings() -> Settings:

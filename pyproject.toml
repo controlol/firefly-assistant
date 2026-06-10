@@ -13,6 +13,7 @@ dependencies = [
     "pillow>=10.0",
     "numpy>=1.26",
     "openpyxl>=3.1",
+    "fastembed>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -47,7 +48,9 @@ disallow_any_unimported = true
 plugins = ["pydantic.mypy"]
 # Third-party libs without type stubs:
 [[tool.mypy.overrides]]
-module = ["rapidocr_onnxruntime.*", "paddleocr.*", "pypdfium2.*", "PIL.*", "openpyxl.*"]
+module = [
+    "rapidocr_onnxruntime.*", "paddleocr.*", "pypdfium2.*", "PIL.*", "openpyxl.*", "fastembed.*",
+]
 ignore_missing_imports = true
 
 [tool.ruff]
