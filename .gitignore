@@ -8,6 +8,7 @@ reports/
 .ruff_cache/
 dist/
 *.egg-info/
+.fixture-state.json
 
 # Real invoices/receipts contain personal & financial data — never commit them.
 samples/invoices/*
