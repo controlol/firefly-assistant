@@ -7,9 +7,14 @@ from decimal import Decimal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Shared: read from process env and a local .env, ignore unrelated keys.
+_ENV_FILE = ".env"
+
 
 class ImapSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="IMAP_")
+    model_config = SettingsConfigDict(
+        env_prefix="IMAP_", env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     host: str
     port: int = 993
@@ -26,7 +31,9 @@ class ImapSettings(BaseSettings):
 
 
 class FireflySettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FIREFLY_")
+    model_config = SettingsConfigDict(
+        env_prefix="FIREFLY_", env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     base_url: str = Field(description="e.g. https://firefly.example.com")
     token: SecretStr = Field(description="Personal Access Token.")
@@ -34,7 +41,9 @@ class FireflySettings(BaseSettings):
 
 
 class MatchingSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="MATCH_")
+    model_config = SettingsConfigDict(
+        env_prefix="MATCH_", env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     # A payment usually posts a few days to a few weeks after the invoice date.
     date_window_days: int = 30
@@ -48,6 +57,8 @@ class MatchingSettings(BaseSettings):
 
 class Settings(BaseSettings):
     """Top-level settings aggregating the sub-configs."""
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     imap: ImapSettings = Field(default_factory=ImapSettings)
     firefly: FireflySettings = Field(default_factory=FireflySettings)
