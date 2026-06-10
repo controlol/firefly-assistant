@@ -23,6 +23,7 @@ from firefly_bot.ocr.heuristics import (
     number_from_filename,
 )
 from firefly_bot.ocr.render import render
+from firefly_bot.ubl import is_xml, parse_ubl
 
 
 class TextRecogniser(Protocol):
@@ -84,7 +85,12 @@ class PaddleTextRecogniser:
 
 
 def extract_invoice(attachment: Attachment, recogniser: TextRecogniser) -> ExtractedInvoice:
-    """Run OCR + heuristics to produce a typed ExtractedInvoice."""
+    """Produce a typed ExtractedInvoice — from UBL (structured) if possible, else OCR."""
+    if is_xml(attachment):
+        ubl = parse_ubl(attachment)
+        if ubl is not None:
+            return ubl
+
     text = recogniser.to_text(attachment)
     total, total_conf = extract_total(text)
     iban, iban_conf = extract_iban(text)

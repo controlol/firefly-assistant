@@ -24,6 +24,7 @@ from firefly_bot.models import (
 )
 from firefly_bot.ocr.extract import RapidOcrTextRecogniser, TextRecogniser, extract_invoice
 from firefly_bot.report.summary import ReportWriter, XlsxReportWriter
+from firefly_bot.ubl import is_ubl_document
 
 log = logging.getLogger("firefly_bot")
 
@@ -56,7 +57,7 @@ def run(
         ledger = DryRunLedger(client) if dry_run else client
 
     try:
-        attachments = _dedup(source.fetch())
+        attachments = _prefer_ubl(_dedup(source.fetch()))
         log.info("Fetched %d unique attachment(s)", len(attachments))
         if not attachments:
             return report_writer.write([], settings.report_dir)
@@ -120,6 +121,18 @@ def _dedup(attachments: list[Attachment]) -> list[Attachment]:
             seen.add(att.sha256)
             unique.append(att)
     return unique
+
+
+def _prefer_ubl(attachments: list[Attachment]) -> list[Attachment]:
+    """When an email carries both a UBL invoice and a PDF, keep only the UBL (source of truth)."""
+    groups: dict[str, list[Attachment]] = {}
+    for att in attachments:
+        groups.setdefault(att.source_message_id, []).append(att)
+    out: list[Attachment] = []
+    for group in groups.values():
+        ubls = [att for att in group if is_ubl_document(att)]
+        out.extend(ubls or group)
+    return out
 
 
 def _window_for(invoices: list[ExtractedInvoice], pad_days: int) -> tuple[date, date]:

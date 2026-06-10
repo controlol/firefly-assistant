@@ -26,6 +26,8 @@ class ImapSettings(BaseSettings):
         "application/pdf",
         "image/png",
         "image/jpeg",
+        "application/xml",
+        "text/xml",
     )
     # Once an invoice is attached, the email is MOVED to this folder (created if missing) so the
     # INBOX shows only pending/problem mail. A move, not a delete — the email is kept.
