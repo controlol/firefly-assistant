@@ -38,7 +38,9 @@ class StatementWriter(Protocol):
         opening_date: str | None = None,
     ) -> str: ...
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str: ...
-    def create_transaction(self, split: dict[str, object], *, skip_duplicates: bool) -> bool: ...
+    def create_transaction(
+        self, split: dict[str, object], *, skip_duplicates: bool
+    ) -> str | None: ...
 
 
 class ImportSummary(BaseModel):
@@ -65,6 +67,7 @@ def _capture_tx_labels(
     *,
     category_score: float = 1.0,
     provenance: str = "mcc",
+    firefly_id: str | None = None,
 ) -> None:
     """Emit one `category` and one `merchant` LabelRecord for a transaction (Phase 1 capture).
 
@@ -74,6 +77,10 @@ def _capture_tx_labels(
     `merchant.predicted` is the resolved/created opposing account id. Both log the raw inputs so a
     future enricher can re-featurise. The merchant `score` stays 1.0 — the IBAN/fuzzy resolver is a
     deterministic, high-precision decision, not a probabilistic one.
+
+    `firefly_id` is the id of the transaction Firefly just created (None when it was a duplicate or
+    on dry-run); both records store it in `features["firefly_id"]` so Phase 1b can key a later human
+    correction in Firefly back to the original prediction.
     """
     ts = datetime.now(tz=UTC)
     store.record(
@@ -85,6 +92,7 @@ def _capture_tx_labels(
                 "counterparty_name": tx.counterparty_name,
                 "description": tx.description,
                 "provenance": provenance,
+                "firefly_id": firefly_id,
             },
             predicted=category,
             score=category_score,
@@ -99,6 +107,7 @@ def _capture_tx_labels(
                 "counterparty_name": tx.counterparty_name,
                 "counterparty_iban": tx.counterparty_iban,
                 "merchant_key": normalise_merchant(tx.counterparty_name),
+                "firefly_id": firefly_id,
             },
             predicted=opposing_id,
             score=1.0,
@@ -185,14 +194,6 @@ def import_statement(
         )
         if category:
             split["category_name"] = category
-        _capture_tx_labels(
-            store,
-            tx,
-            category,
-            opposing.get(index),
-            category_score=score,
-            provenance=provenance,
-        )
 
         if is_transfer:
             assert tx.counterparty_iban is not None  # implied by is_transfer
@@ -208,11 +209,17 @@ def import_statement(
             split["source_id"], split["destination_id"] = opposing[index], asset_id
 
         if dry_run:
+            _capture_tx_labels(
+                store, tx, category, opposing.get(index),
+                category_score=score, provenance=provenance,
+            )
             created += 1
             transfers += int(is_transfer)
             continue
+        firefly_id: str | None = None
         try:
-            if writer.create_transaction(split, skip_duplicates=skip_duplicates):
+            firefly_id = writer.create_transaction(split, skip_duplicates=skip_duplicates)
+            if firefly_id is not None:
                 created += 1
                 transfers += int(is_transfer)
             else:
@@ -220,6 +227,10 @@ def import_statement(
         except Exception:  # noqa: BLE001 - report and continue
             log.exception("Failed to import %s %s", tx.date, tx.amount)
             errors += 1
+        _capture_tx_labels(
+            store, tx, category, opposing.get(index),
+            category_score=score, provenance=provenance, firefly_id=firefly_id,
+        )
 
     return ImportSummary(
         total=len(statement.transactions),

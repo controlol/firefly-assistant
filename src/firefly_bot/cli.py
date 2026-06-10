@@ -13,6 +13,7 @@ from firefly_bot.banking.camt import parse_camt053
 from firefly_bot.banking.importer import import_statement
 from firefly_bot.config import Settings, load_settings
 from firefly_bot.enrich.bootstrap import bootstrap_labels
+from firefly_bot.enrich.corrections import capture_corrections
 from firefly_bot.firefly.client import FireflyClient
 from firefly_bot.ingest.source import AttachmentSource, FolderAttachmentSource
 from firefly_bot.labels import JsonlLabelStore, NullLabelStore, read_labels
@@ -54,6 +55,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     window.add_argument("--since", help="Look back from this date (YYYY-MM-DD) instead of --days.")
 
+    reconcile_p = sub.add_parser(
+        "reconcile-labels",
+        parents=[common],
+        help="Capture human category corrections from Firefly into labels.jsonl (read-only API).",
+    )
+    rwindow = reconcile_p.add_mutually_exclusive_group()
+    rwindow.add_argument(
+        "--days", type=int, default=365, help="Search Firefly back this many days (default: 365)."
+    )
+    rwindow.add_argument(
+        "--since", help="Search Firefly from this date (YYYY-MM-DD) instead of --days."
+    )
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -66,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         return _import(Path(args.camt), dry_run=args.dry_run)
     if args.command == "bootstrap":
         return _bootstrap(args)
+    if args.command == "reconcile-labels":
+        return _reconcile(args)
     return 1
 
 
@@ -177,6 +193,52 @@ def _bootstrap(args: argparse.Namespace) -> int:
         f"categorised {summary.categorised}, category records {summary.category_records}, "
         f"merchant records {summary.merchant_records}, "
         f"skipped duplicates {summary.skipped_duplicates}"
+    )
+    return 0
+
+
+def _reconcile(args: argparse.Namespace) -> int:
+    """Capture human category corrections from Firefly into labels.jsonl (read-only on Firefly).
+
+    Loads prior labels, finds the transactions behind the still-uncorrected category predictions,
+    re-reads their live state from Firefly, and appends a ``corrected`` record wherever the user
+    changed what we predicted. The only thing written is the local label file.
+    """
+    settings = load_settings()
+    if args.since:
+        start = date.fromisoformat(args.since)
+    else:
+        start = (datetime.now(tz=UTC) - timedelta(days=args.days)).date()
+    end = datetime.now(tz=UTC).date()
+
+    prior = list(read_labels(settings.labels_path))
+    wanted = {
+        fid
+        for rec in prior
+        if rec.kind == "category" and rec.corrected is None
+        and isinstance((fid := rec.features.get("firefly_id")), str)
+    }
+    if not wanted:
+        print("Reconcile: no uncorrected category records with a firefly_id — nothing to do.")
+        return 0
+
+    store = NullLabelStore() if args.dry_run else JsonlLabelStore(settings.labels_path)
+    if args.dry_run:
+        log.info("DRY RUN — no writes to labels.jsonl.")
+    with FireflyClient(settings.firefly) as client:
+        current = {
+            tx.id: tx
+            for tx in client.list_transactions(start=start, end=end)
+            if tx.id in wanted
+        }
+        summary = capture_corrections(prior, current, store)
+    store.close()
+
+    prefix = "(dry-run) " if args.dry_run else ""
+    print(
+        f"{prefix}Reconcile ({start} to {end}): checked {summary.checked}, "
+        f"corrections {summary.corrections}, unchanged {summary.unchanged}, "
+        f"unresolved {summary.unresolved}"
     )
     return 0
 

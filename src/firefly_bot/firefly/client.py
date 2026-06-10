@@ -181,8 +181,15 @@ class FireflyClient:
         resp.raise_for_status()
         return str(resp.json()["data"]["id"])
 
-    def create_transaction(self, split: dict[str, object], *, skip_duplicates: bool) -> bool:
-        """Create a transaction. Returns False if Firefly rejected it as a duplicate."""
+    def create_transaction(
+        self, split: dict[str, object], *, skip_duplicates: bool
+    ) -> str | None:
+        """Create a transaction, returning the new transaction group id.
+
+        Returns the created id (``data.id`` from the 200/201 response) on success, or ``None`` when
+        Firefly rejected it as a duplicate. The id lets a later correction-capture pass key a label
+        record back to the transaction it described.
+        """
         resp = self._client.post(
             "/api/v1/transactions",
             json={
@@ -193,6 +200,6 @@ class FireflyClient:
             },
         )
         if resp.status_code == 422 and "uplicate" in resp.text:
-            return False
+            return None
         resp.raise_for_status()
-        return True
+        return str(resp.json()["data"]["id"])

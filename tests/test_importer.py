@@ -56,11 +56,14 @@ class FakeWriter:
         self.created_opposing.append((name, iban, role))
         return account_id
 
-    def create_transaction(self, split: dict[str, object], *, skip_duplicates: bool) -> bool:
+    def create_transaction(
+        self, split: dict[str, object], *, skip_duplicates: bool
+    ) -> str | None:
         if split["date"] in self.duplicate_dates:
-            return False
+            return None
         self.created_txns.append(split)
-        return True
+        self._next += 1
+        return str(self._next)
 
 
 def _statement() -> BankStatement:
@@ -146,6 +149,13 @@ def test_emits_category_and_merchant_labels_per_transaction() -> None:
     ah_merchants = [r for r in merchants if "albert" in str(r.features["merchant_key"])]
     assert {r.features["merchant_key"] for r in ah_merchants} == {"albert heijn"}
     assert all(r.source == "auto" and r.corrected is None for r in store.records)
+    # Phase 1b: every record carries the id Firefly assigned the created transaction, so a later
+    # correction pass can key the prediction back to its transaction.
+    assert all(isinstance(r.features["firefly_id"], str) for r in store.records)
+    # The category + merchant pair for one transaction share that transaction's id.
+    ah_cat = next(r for r in categories if r.features["counterparty_name"] == "Albert Heijn 2264")
+    ah_mer = next(r for r in merchants if r.features["counterparty_name"] == "Albert Heijn 2264")
+    assert ah_cat.features["firefly_id"] == ah_mer.features["firefly_id"]
 
 
 class FakeCategoriser:
