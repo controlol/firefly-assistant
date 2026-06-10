@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from firefly_bot.models import Attachment, FieldConfidence
-from firefly_bot.ubl import is_ubl_document, parse_ubl
+from firefly_bot.ubl import embedded_pdf, is_ubl_document, parse_ubl
 
 _UBL = """<?xml version="1.0" encoding="UTF-8"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
@@ -59,3 +60,28 @@ def test_non_ubl_xml_returns_none() -> None:
 
 def test_is_ubl_document_true_for_ubl() -> None:
     assert is_ubl_document(_attachment(_UBL.encode())) is True
+
+
+_UBL_WITH_PDF = """<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>X1</cbc:ID>
+  <cac:AdditionalDocumentReference><cac:Attachment>
+    <cbc:EmbeddedDocumentBinaryObject filename="inv.pdf"
+        mimeCode="application/pdf">{b64}</cbc:EmbeddedDocumentBinaryObject>
+  </cac:Attachment></cac:AdditionalDocumentReference>
+</Invoice>
+""".format(b64=base64.b64encode(b"%PDF-1.4 hello").decode())
+
+
+def test_embedded_pdf_is_extracted() -> None:
+    pdf = embedded_pdf(_attachment(_UBL_WITH_PDF.encode()))
+    assert pdf is not None
+    assert pdf.content_type == "application/pdf"
+    assert pdf.filename == "inv.pdf"
+    assert pdf.data == b"%PDF-1.4 hello"
+
+
+def test_embedded_pdf_none_when_absent() -> None:
+    assert embedded_pdf(_attachment(_UBL.encode())) is None

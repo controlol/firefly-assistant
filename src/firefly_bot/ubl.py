@@ -7,6 +7,9 @@ for anything that isn't a UBL invoice, so the caller can fall back to OCR.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import re
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -38,6 +41,38 @@ def is_ubl_document(attachment: Attachment) -> bool:
     except ET.ParseError:
         return False
     return root.tag.split("}")[-1] in _UBL_ROOTS
+
+
+def embedded_pdf(attachment: Attachment) -> Attachment | None:
+    """The PDF embedded in a UBL (cbc:EmbeddedDocumentBinaryObject), if present.
+
+    NLCIUS invoices (e.g. AFAS) carry the human-readable PDF inside the XML as base64, so we can
+    attach a real PDF even when the email only carried the UBL.
+    """
+    try:
+        root = ET.fromstring(attachment.data)
+    except ET.ParseError:
+        return None
+    for node in root.iter():
+        if node.tag.split("}")[-1] != "EmbeddedDocumentBinaryObject":
+            continue
+        if (node.get("mimeCode") or "").lower() != "application/pdf" or not node.text:
+            continue
+        try:
+            data = base64.b64decode(node.text, validate=False)
+        except (binascii.Error, ValueError):
+            continue
+        stem = attachment.filename.rsplit(".", 1)[0]
+        return Attachment(
+            filename=node.get("filename") or f"{stem}.pdf",
+            content_type="application/pdf",
+            data=data,
+            sha256=hashlib.sha256(data).hexdigest(),
+            source_message_id=attachment.source_message_id,
+            received_at=attachment.received_at,
+            source_uid=attachment.source_uid,
+        )
+    return None
 
 
 def parse_ubl(attachment: Attachment) -> ExtractedInvoice | None:
