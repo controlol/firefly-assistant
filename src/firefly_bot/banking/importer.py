@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal
 from typing import Protocol
 
 from pydantic import BaseModel
 
 from firefly_bot.banking.accounts import AccountResolver
 from firefly_bot.banking.camt import BankStatement
+from firefly_bot.banking.mcc import category_for_mcc
 from firefly_bot.models import FireflyAccount
 
 log = logging.getLogger("firefly_bot.import")
@@ -22,7 +24,16 @@ log = logging.getLogger("firefly_bot.import")
 
 class StatementWriter(Protocol):
     def list_accounts(self, account_type: str) -> list[FireflyAccount]: ...
-    def ensure_asset_account(self, iban: str, currency: str, role: str, name: str) -> str: ...
+    def ensure_asset_account(
+        self,
+        iban: str,
+        currency: str,
+        role: str,
+        name: str,
+        *,
+        opening_balance: Decimal | None = None,
+        opening_date: str | None = None,
+    ) -> str: ...
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str: ...
     def create_transaction(self, split: dict[str, object], *, skip_duplicates: bool) -> bool: ...
 
@@ -57,6 +68,8 @@ def import_statement(
     asset_id = "" if dry_run else writer.ensure_asset_account(
         statement.account_iban, statement.currency, "defaultAsset",
         f"{account_name} {statement.account_iban[-6:]}",
+        opening_balance=statement.opening_balance,
+        opening_date=statement.opening_date or _earliest_date(statement),
     )
     savings = {} if dry_run else {
         iban: writer.ensure_asset_account(
@@ -69,6 +82,7 @@ def import_statement(
 
     created = duplicates = errors = transfers = 0
     for index, tx in enumerate(statement.transactions):
+        is_transfer = tx.counterparty_iban in savings
         split: dict[str, object] = {
             "date": tx.date,
             "amount": str(tx.amount),
@@ -77,13 +91,16 @@ def import_statement(
         }
         if tx.reference:
             split["external_id"] = tx.reference[:255]
+        category = None if is_transfer else category_for_mcc(tx.mcc)
+        if category:
+            split["category_name"] = category
 
-        if tx.counterparty_iban in savings:
+        if is_transfer:
+            assert tx.counterparty_iban is not None  # implied by is_transfer
             split["type"] = "transfer"
             other = savings[tx.counterparty_iban]
             src, dst = (asset_id, other) if tx.is_outgoing else (other, asset_id)
             split["source_id"], split["destination_id"] = src, dst
-            transfers += 1
         elif tx.is_outgoing:
             split["type"] = "withdrawal"
             split["source_id"], split["destination_id"] = asset_id, opposing[index]
@@ -93,10 +110,12 @@ def import_statement(
 
         if dry_run:
             created += 1
+            transfers += int(is_transfer)
             continue
         try:
             if writer.create_transaction(split, skip_duplicates=skip_duplicates):
                 created += 1
+                transfers += int(is_transfer)
             else:
                 duplicates += 1
         except Exception:  # noqa: BLE001 - report and continue
@@ -112,6 +131,11 @@ def import_statement(
         asset_account_id=asset_id,
         savings_account_ids=savings,
     )
+
+
+def _earliest_date(statement: BankStatement) -> str | None:
+    dates = [tx.date for tx in statement.transactions if tx.date]
+    return min(dates) if dates else None
 
 
 def _own_accounts(

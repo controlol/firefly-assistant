@@ -142,19 +142,30 @@ class FireflyClient:
             page += 1
         return out
 
-    def ensure_asset_account(self, iban: str, currency: str, role: str, name: str) -> str:
+    def ensure_asset_account(
+        self,
+        iban: str,
+        currency: str,
+        role: str,
+        name: str,
+        *,
+        opening_balance: Decimal | None = None,
+        opening_date: str | None = None,
+    ) -> str:
         for account in self.list_accounts("asset"):
             if account.iban == iban:
                 return account.id
-        return self._create_account(
-            {
-                "name": name,
-                "type": "asset",
-                "account_role": role,
-                "iban": iban,
-                "currency_code": currency,
-            }
-        )
+        body: dict[str, object] = {
+            "name": name,
+            "type": "asset",
+            "account_role": role,
+            "iban": iban,
+            "currency_code": currency,
+        }
+        if opening_balance is not None and opening_date:
+            body["opening_balance"] = str(opening_balance)
+            body["opening_balance_date"] = opening_date
+        return self._create_account(body)
 
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str:
         body: dict[str, object] = {"name": name, "type": role}

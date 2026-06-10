@@ -26,12 +26,15 @@ class BankTransaction(BaseModel):
     counterparty_name: str
     counterparty_iban: str | None = None
     reference: str | None = None  # bank reference, used as external_id for dedup/traceability
+    mcc: str | None = None  # Merchant Category Code from card payments (e.g. "5411")
 
 
 class BankStatement(BaseModel):
     account_iban: str
     currency: str
     transactions: list[BankTransaction]
+    opening_balance: Decimal | None = None
+    opening_date: str | None = None
 
 
 def parse_camt053(source: Path | bytes | str) -> BankStatement:
@@ -43,6 +46,7 @@ def parse_camt053(source: Path | bytes | str) -> BankStatement:
 
     account_iban = stmt.findtext("c:Acct/c:Id/c:IBAN", namespaces=ns) or ""
     currency = stmt.findtext("c:Acct/c:Ccy", namespaces=ns) or "EUR"
+    opening_balance, opening_date = _opening_balance(stmt, ns)
 
     transactions: list[BankTransaction] = []
     for ntry in stmt.findall("c:Ntry", ns):
@@ -74,9 +78,37 @@ def parse_camt053(source: Path | bytes | str) -> BankStatement:
                 counterparty_name=(name or "Onbekend").strip()[:255],
                 counterparty_iban=iban,
                 reference=(reference or None),
+                mcc=_mcc(additional),
             )
         )
-    return BankStatement(account_iban=account_iban, currency=currency, transactions=transactions)
+    return BankStatement(
+        account_iban=account_iban,
+        currency=currency,
+        transactions=transactions,
+        opening_balance=opening_balance,
+        opening_date=opening_date,
+    )
+
+
+def _opening_balance(stmt: ET.Element, ns: dict[str, str]) -> tuple[Decimal | None, str | None]:
+    """The opening booked balance (OPBD), signed; used to set a realistic account start balance."""
+    for bal in stmt.findall("c:Bal", ns):
+        code = bal.findtext("c:Tp/c:CdOrPrtry/c:Cd", namespaces=ns)
+        if code != "OPBD":
+            continue
+        amount = Decimal(bal.findtext("c:Amt", default="0", namespaces=ns))
+        indicator = (bal.findtext("c:CdtDbtInd", namespaces=ns) or "CRDT").upper()
+        signed = amount if indicator == "CRDT" else -amount
+        date = bal.findtext("c:Dt/c:Dt", namespaces=ns)
+        return signed, date
+    return None, None
+
+
+def _mcc(additional: str | None) -> str | None:
+    if not additional:
+        return None
+    match = re.search(r"MCC[:\s]*(\d{4})", additional)
+    return match.group(1) if match else None
 
 
 def _root(source: Path | bytes | str) -> ET.Element:

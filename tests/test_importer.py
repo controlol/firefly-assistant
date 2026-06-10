@@ -19,7 +19,16 @@ class FakeWriter:
     def list_accounts(self, account_type: str) -> list[FireflyAccount]:
         return []
 
-    def ensure_asset_account(self, iban: str, currency: str, role: str, name: str) -> str:
+    def ensure_asset_account(
+        self,
+        iban: str,
+        currency: str,
+        role: str,
+        name: str,
+        *,
+        opening_balance: Decimal | None = None,
+        opening_date: str | None = None,
+    ) -> str:
         return f"asset-{iban[-4:]}"
 
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str:
@@ -42,7 +51,7 @@ def _statement() -> BankStatement:
         transactions=[
             BankTransaction(
                 date="2026-04-01", amount=Decimal("10.00"), is_outgoing=True,
-                description="boodschappen", counterparty_name="Albert Heijn 2264",
+                description="boodschappen", counterparty_name="Albert Heijn 2264", mcc="5411",
             ),
             BankTransaction(
                 date="2026-04-02", amount=Decimal("12.00"), is_outgoing=True,
@@ -87,3 +96,13 @@ def test_dry_run_writes_nothing() -> None:
     assert summary.created == 3
     assert writer.created_txns == []
     assert writer.created_opposing == []
+
+
+def test_mcc_sets_category_on_card_payment() -> None:
+    writer = FakeWriter()
+    import_statement(_statement(), writer, owner_name="J. Jansen")
+    albert_heijn = next(t for t in writer.created_txns if t["amount"] == "10.00")
+    assert albert_heijn["category_name"] == "Boodschappen"  # MCC 5411
+    # The transfer must not be categorised.
+    transfer = next(t for t in writer.created_txns if t["type"] == "transfer")
+    assert "category_name" not in transfer

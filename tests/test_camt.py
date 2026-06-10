@@ -61,6 +61,7 @@ def test_card_payment_name_falls_back_to_additional() -> None:
     tx = parse_camt053(_SAMPLE).transactions[1]
     assert tx.counterparty_name == "Albert Heijn 2264"
     assert tx.counterparty_iban is None
+    assert tx.mcc == "5411"  # parsed from "MCC:5411"
 
 
 def test_credit_entry_is_incoming() -> None:
