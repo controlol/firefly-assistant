@@ -14,3 +14,10 @@ samples/invoices/*
 !samples/invoices/.gitkeep
 samples/expected.json
 
+# Bank statement exports (CAMT.053 / MT940) — contain ALL transactions. Never commit.
+samples/*.xml
+samples/statements/
+*.camt053
+*.mt940
+*.940
+
