@@ -27,9 +27,9 @@ class ImapSettings(BaseSettings):
         "image/png",
         "image/jpeg",
     )
-    # Custom IMAP keyword set on a message once its invoice has been attached. Messages with this
-    # keyword are skipped on the next run; emails are never deleted.
-    processed_keyword: str = "FireflyProcessed"
+    # Once an invoice is attached, the email is MOVED to this folder (created if missing) so the
+    # INBOX shows only pending/problem mail. A move, not a delete — the email is kept.
+    processed_folder: str = "Processed"
 
 
 class FireflySettings(BaseSettings):

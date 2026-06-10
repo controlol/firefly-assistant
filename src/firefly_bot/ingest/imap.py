@@ -16,6 +16,9 @@ from email.message import Message
 from firefly_bot.config import ImapSettings
 from firefly_bot.models import Attachment
 
+# Allow `UID MOVE` (RFC 6851) through imaplib; Dovecot and most servers support it.
+imaplib.Commands.setdefault("MOVE", ("SELECTED",))
+
 
 def connect(settings: ImapSettings) -> imaplib.IMAP4_SSL:
     conn = imaplib.IMAP4_SSL(settings.host, settings.port)
@@ -24,13 +27,31 @@ def connect(settings: ImapSettings) -> imaplib.IMAP4_SSL:
     return conn
 
 
-def search_unprocessed(conn: imaplib.IMAP4_SSL, keyword: str) -> list[bytes]:
-    """UIDs of messages not yet marked with the processed keyword."""
-    typ, data = conn.uid("search", "UNKEYWORD", keyword)
+def search_messages(conn: imaplib.IMAP4_SSL) -> list[bytes]:
+    """UIDs of all messages in the selected mailbox (processed mail is moved out)."""
+    typ, data = conn.uid("search", "ALL")
     if typ != "OK" or not data or not data[0]:
         return []
     uids: list[bytes] = data[0].split()
     return uids
+
+
+def ensure_folder(conn: imaplib.IMAP4_SSL, folder: str) -> None:
+    conn.create(folder)  # NO if it already exists — harmless
+    conn.subscribe(folder)  # so Roundcube shows it
+
+
+def move(conn: imaplib.IMAP4_SSL, uid: str, folder: str) -> None:
+    """Move a message to another folder (kept, not deleted). Falls back to copy+delete."""
+    try:
+        typ, _ = conn.uid("MOVE", uid, folder)
+        if typ == "OK":
+            return
+    except imaplib.IMAP4.error:
+        pass
+    conn.uid("COPY", uid, folder)
+    conn.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
+    conn.expunge()
 
 
 def fetch_message(conn: imaplib.IMAP4_SSL, uid: bytes) -> Message | None:
@@ -38,10 +59,6 @@ def fetch_message(conn: imaplib.IMAP4_SSL, uid: bytes) -> Message | None:
     if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
         return None
     return email.message_from_bytes(msg_data[0][1])
-
-
-def mark_processed(conn: imaplib.IMAP4_SSL, uid: str, keyword: str) -> None:
-    conn.uid("store", uid, "+FLAGS", f"({keyword})")
 
 
 def extract_attachments(message: Message, uid: str, settings: ImapSettings) -> list[Attachment]:

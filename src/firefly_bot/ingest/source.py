@@ -40,14 +40,17 @@ class ImapAttachmentSource:
     def __init__(self, settings: ImapSettings) -> None:
         self._settings = settings
         self._conn: imaplib.IMAP4_SSL | None = None
+        self._moved: set[str] = set()
         # Messages that arrived without a usable attachment — a human mistake to surface.
         self.skipped: list[tuple[str, str]] = []
 
     def fetch(self) -> list[Attachment]:
         self._conn = imap.connect(self._settings)
+        imap.ensure_folder(self._conn, self._settings.processed_folder)
         self.skipped = []
+        self._moved = set()
         out: list[Attachment] = []
-        for uid in imap.search_unprocessed(self._conn, self._settings.processed_keyword):
+        for uid in imap.search_messages(self._conn):
             message = imap.fetch_message(self._conn, uid)
             if message is None:
                 continue
@@ -58,15 +61,19 @@ class ImapAttachmentSource:
                 subject = str(message.get("Subject", "(no subject)"))
                 self.skipped.append((uid.decode(), subject))
                 log.warning(
-                    "Email uid %s %r has no usable attachment — left unprocessed for review",
+                    "Email uid %s %r has no usable attachment — left in inbox for review",
                     uid.decode(),
                     subject,
                 )
         return out
 
     def mark_processed(self, attachment: Attachment) -> None:
-        if self._conn is not None and attachment.source_uid is not None:
-            imap.mark_processed(self._conn, attachment.source_uid, self._settings.processed_keyword)
+        """Move the email to the processed folder (once per message)."""
+        uid = attachment.source_uid
+        if self._conn is None or uid is None or uid in self._moved:
+            return
+        imap.move(self._conn, uid, self._settings.processed_folder)
+        self._moved.add(uid)
 
     def close(self) -> None:
         if self._conn is not None:
