@@ -33,6 +33,16 @@ uv run firefly-bot run -v             # live: attach documents + tag transaction
 `--dry-run` reads your real transactions and produces the audit report, but suppresses every
 write to Firefly (via `DryRunLedger`). Use it to validate matching before going live.
 
+To test against local documents instead of an inbox (no IMAP needed):
+
+```bash
+uv run firefly-bot run --dry-run -v --source folder --folder samples/invoices
+```
+
+Matching uses the **invoice number** (found in the transaction reference), **amount**, IBAN and
+**invoice date**. Auto-attach requires the invoice number to appear in the transaction plus a
+corroborating amount/IBAN; weaker matches are attached with the `needs-review` tag.
+
 ### OCR engine
 
 The default engine is **RapidOCR** (PP-OCR models on ONNXRuntime): CPU-friendly, no

@@ -116,8 +116,10 @@ def main(argv: list[str] | None = None) -> int:
     for path in files:
         inv = extract_invoice(_load_attachment(path), recogniser)
         print(f"\n=== {path.name} ===")
-        print(f"  total : {inv.total_amount}  ({inv.total_confidence.name})")
-        print(f"  iban  : {inv.counterparty_iban}  ({inv.iban_confidence.name})")
+        print(f"  total  : {inv.total_amount}  ({inv.total_confidence.name})")
+        print(f"  iban   : {inv.counterparty_iban}  ({inv.iban_confidence.name})")
+        print(f"  number : {inv.invoice_number}  ({inv.number_confidence.name})")
+        print(f"  date   : {inv.invoice_date}  ({inv.date_confidence.name})")
         if args.show_text:
             print("  --- raw OCR text ---")
             print("\n".join(f"    {line}" for line in inv.raw_text.splitlines()))

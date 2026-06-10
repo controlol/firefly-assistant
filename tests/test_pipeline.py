@@ -91,14 +91,16 @@ def _transaction() -> FireflyTransaction:
         date=date(2026, 5, 30),
         amount=Decimal("-121.00"),
         currency_code="EUR",
-        description="Acme",
+        description="Betaling factuur F26000352",
         source_iban="NL00MINE0000000000",
         destination_iban="NL91ABNA0417164300",
         web_url="http://f/transactions/show/42",
     )
 
 
-_MATCHING_TEXT = "Totaal te betalen  EUR 121,00\nIBAN NL91 ABNA 0417 1643 00"
+_MATCHING_TEXT = (
+    "Factuurnummer F26000352\nTotaal te betalen  EUR 121,00\nIBAN NL91 ABNA 0417 1643 00"
+)
 
 
 # --- tests -------------------------------------------------------------------

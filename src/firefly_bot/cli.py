@@ -7,6 +7,7 @@ import logging
 import sys
 
 from firefly_bot.config import load_settings
+from firefly_bot.ingest.source import AttachmentSource, FolderAttachmentSource
 from firefly_bot.pipeline import run
 
 
@@ -17,6 +18,17 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="Read, match and report, but do not attach or tag anything in Firefly.",
+    )
+    parser.add_argument(
+        "--source",
+        choices=["imap", "folder"],
+        default="imap",
+        help="Where to read documents from (default: imap).",
+    )
+    parser.add_argument(
+        "--folder",
+        default="samples/invoices",
+        help="Document folder when --source folder.",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -30,7 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings()
         if args.dry_run:
             logging.getLogger("firefly_bot").info("DRY RUN — no writes to Firefly.")
-        report_path = run(settings, dry_run=args.dry_run)
+        source: AttachmentSource | None = (
+            FolderAttachmentSource(args.folder) if args.source == "folder" else None
+        )
+        report_path = run(settings, source=source, dry_run=args.dry_run)
         print(f"Report: {report_path}")
         return 0
     return 1

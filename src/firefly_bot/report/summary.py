@@ -28,6 +28,8 @@ class XlsxReportWriter:
 
 _HEADERS = (
     "Document",
+    "Invoice #",
+    "Invoice date",
     "Total",
     "Currency",
     "Counterparty IBAN",
@@ -36,6 +38,7 @@ _HEADERS = (
     "Transaction",
     "Detail",
 )
+_TRANSACTION_COLUMN = 9  # 1-based index of the "Transaction" column for the hyperlink.
 
 
 def write_xlsx(results: list[MatchResult], report_dir: str) -> str:
@@ -57,6 +60,8 @@ def write_xlsx(results: list[MatchResult], report_dir: str) -> str:
         ws.append(
             [
                 inv.source.filename,
+                inv.invoice_number or "",
+                inv.invoice_date.isoformat() if inv.invoice_date is not None else "",
                 float(inv.total_amount) if inv.total_amount is not None else None,
                 inv.currency,
                 inv.counterparty_iban or "",
@@ -68,7 +73,7 @@ def write_xlsx(results: list[MatchResult], report_dir: str) -> str:
         )
         url = result.transaction_web_url
         if url:
-            link_cell = ws.cell(row=ws.max_row, column=7)
+            link_cell = ws.cell(row=ws.max_row, column=_TRANSACTION_COLUMN)
             link_cell.hyperlink = url
             link_cell.value = result.transaction.id if result.transaction else url
             link_cell.font = Font(color="0000EE", underline="single")

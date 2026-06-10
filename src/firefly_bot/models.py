@@ -48,16 +48,19 @@ class ExtractedInvoice(BaseModel):
     counterparty_iban: str | None = None
     counterparty_name: str | None = None
     invoice_date: date | None = None
+    invoice_number: str | None = None
     raw_text: str = Field(default="", repr=False)
 
     # Per-field confidence so the matcher and report can reason about reliability.
     total_confidence: FieldConfidence = FieldConfidence.NONE
     iban_confidence: FieldConfidence = FieldConfidence.NONE
+    number_confidence: FieldConfidence = FieldConfidence.NONE
+    date_confidence: FieldConfidence = FieldConfidence.NONE
 
     @property
     def is_actionable(self) -> bool:
-        """True when we have at least the minimum to attempt a match."""
-        return self.total_amount is not None
+        """True when we have at least one identifier to match on (amount or invoice number)."""
+        return self.total_amount is not None or self.invoice_number is not None
 
 
 class FireflyTransaction(BaseModel):

@@ -8,6 +8,7 @@ trivially unit-testable (see tests/test_heuristics.py).
 from __future__ import annotations
 
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from firefly_bot.models import FieldConfidence
@@ -182,3 +183,134 @@ def _amounts_in(line: str) -> list[Decimal]:
 def _largest_amount_in(line: str) -> Decimal | None:
     candidates = _amounts_in(line)
     return max(candidates) if candidates else None
+
+
+# --- invoice number ------------------------------------------------------------------------
+
+_NUMBER_LABELS: tuple[str, ...] = (
+    "factuurnummer",
+    "factuurnr",
+    "factuurnumber",
+    "invoicenumber",
+    "invoiceno",
+    "ordernummer",
+    "referentie",
+)
+# A reference token: optional short letter prefix, then digits, then more alnum/-/ chars.
+_NUMBER_TOKEN_RE = re.compile(r"[A-Za-z]{0,4}\d[A-Za-z0-9][A-Za-z0-9/-]{2,}")
+_FILENAME_NOISE = ("verkoopfactuur", "factuur", "invoice", "nota", "copy", "kopie")
+
+
+def normalise_reference(value: str) -> str:
+    """Canonical form for comparing invoice numbers to transaction references."""
+    return re.sub(r"[\s\-/.]", "", value).upper()
+
+
+def extract_invoice_number(text: str) -> tuple[str | None, FieldConfidence]:
+    """Find the invoice number near a Dutch label (same line or the next few)."""
+    lines = text.splitlines()
+    keys = [_despace(ln) for ln in lines]
+    for idx, key in enumerate(keys):
+        if not any(label in key for label in _NUMBER_LABELS):
+            continue
+        token = _reference_token(_strip_labels(lines[idx]))
+        if token is None:
+            for offset in range(1, _LOOKAHEAD_LINES + 1):
+                if idx + offset < len(lines):
+                    token = _reference_token(lines[idx + offset])
+                    if token is not None:
+                        break
+        if token is not None:
+            return token, FieldConfidence.HIGH
+    return None, FieldConfidence.NONE
+
+
+def number_from_filename(filename: str) -> tuple[str | None, FieldConfidence]:
+    """Fallback: invoice numbers are usually in the filename (e.g. 'Factuur - F26000352.pdf')."""
+    stem = re.sub(r"\.[A-Za-z0-9]+$", "", filename)
+    cleaned = stem
+    for noise in _FILENAME_NOISE:
+        cleaned = re.sub(noise, " ", cleaned, flags=re.IGNORECASE)
+    token = _reference_token(cleaned)
+    return (token, FieldConfidence.MEDIUM) if token is not None else (None, FieldConfidence.NONE)
+
+
+def _strip_labels(line: str) -> str:
+    out = line
+    for label in _NUMBER_LABELS:
+        out = re.sub(label, " ", out, flags=re.IGNORECASE)
+    return out
+
+
+def _reference_token(line: str) -> str | None:
+    """The most invoice-number-like token on a line: contains a digit, not a money/date value."""
+    best: str | None = None
+    for m in _NUMBER_TOKEN_RE.finditer(line):
+        token = m.group(0)
+        if _NUMERIC_DATE_RE.fullmatch(token) or _looks_like_amount(token):
+            continue
+        if best is None or _digit_count(token) > _digit_count(best):
+            best = token
+    return best
+
+
+def _digit_count(value: str) -> int:
+    return sum(c.isdigit() for c in value)
+
+
+def _looks_like_amount(token: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,3}(?:[.\s]\d{3})*,\d{2}|\d+[.,]\d{2}", token))
+
+
+# --- invoice date --------------------------------------------------------------------------
+
+_DATE_LABELS: tuple[str, ...] = ("factuurdatum", "invoicedate", "datum", "date")
+_NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b")
+_MONTH_DATE_RE = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})\b")
+_MONTHS: dict[str, int] = {
+    "januari": 1, "jan": 1, "februari": 2, "feb": 2, "maart": 3, "mrt": 3,
+    "april": 4, "apr": 4, "mei": 5, "juni": 6, "jun": 6, "juli": 7, "jul": 7,
+    "augustus": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "oktober": 10,
+    "okt": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+}
+
+
+def extract_invoice_date(text: str) -> tuple[date | None, FieldConfidence]:
+    """Find the invoice date near a Dutch label (same line or the next few). HIGH when labelled."""
+    lines = text.splitlines()
+    keys = [_despace(ln) for ln in lines]
+    for idx, key in enumerate(keys):
+        if not any(label in key for label in _DATE_LABELS):
+            continue
+        parsed = _parse_date(lines[idx])
+        if parsed is None:
+            for offset in range(1, _LOOKAHEAD_LINES + 1):
+                if idx + offset < len(lines):
+                    parsed = _parse_date(lines[idx + offset])
+                    if parsed is not None:
+                        break
+        if parsed is not None:
+            return parsed, FieldConfidence.HIGH
+    return None, FieldConfidence.NONE
+
+
+def _parse_date(line: str) -> date | None:
+    numeric = _NUMERIC_DATE_RE.search(line)
+    if numeric is not None:
+        day, month, year = (int(g) for g in numeric.groups())
+        if year < 100:
+            year += 2000
+        return _safe_date(year, month, day)
+    named = _MONTH_DATE_RE.search(line)
+    if named is not None:
+        month_num = _MONTHS.get(named.group(2).lower())
+        if month_num is not None:
+            return _safe_date(int(named.group(3)), month_num, int(named.group(1)))
+    return None
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None

@@ -15,7 +15,13 @@ from __future__ import annotations
 from typing import Protocol
 
 from firefly_bot.models import Attachment, ExtractedInvoice
-from firefly_bot.ocr.heuristics import extract_iban, extract_total
+from firefly_bot.ocr.heuristics import (
+    extract_iban,
+    extract_invoice_date,
+    extract_invoice_number,
+    extract_total,
+    number_from_filename,
+)
 from firefly_bot.ocr.render import render
 
 
@@ -82,11 +88,22 @@ def extract_invoice(attachment: Attachment, recogniser: TextRecogniser) -> Extra
     text = recogniser.to_text(attachment)
     total, total_conf = extract_total(text)
     iban, iban_conf = extract_iban(text)
+    invoice_date, date_conf = extract_invoice_date(text)
+
+    # Prefer the labelled number from the document; fall back to the filename.
+    number, number_conf = extract_invoice_number(text)
+    if number is None:
+        number, number_conf = number_from_filename(attachment.filename)
+
     return ExtractedInvoice(
         source=attachment,
         total_amount=total,
         counterparty_iban=iban,
+        invoice_date=invoice_date,
+        invoice_number=number,
         raw_text=text,
         total_confidence=total_conf,
         iban_confidence=iban_conf,
+        number_confidence=number_conf,
+        date_confidence=date_conf,
     )
