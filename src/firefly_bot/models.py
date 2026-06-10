@@ -24,6 +24,9 @@ class Attachment(BaseModel):
     sha256: str = Field(description="Content hash, used to dedup across runs.")
     source_message_id: str
     received_at: datetime
+    source_uid: str | None = Field(
+        default=None, description="IMAP UID of the message, so it can be marked processed."
+    )
 
 
 class FieldConfidence(float, Enum):

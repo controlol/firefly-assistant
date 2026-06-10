@@ -20,9 +20,17 @@ from firefly_bot.pipeline import run
 class FakeSource:
     def __init__(self, attachments: list[Attachment]) -> None:
         self._attachments = attachments
+        self.processed: list[str] = []
+        self.closed = False
 
     def fetch(self) -> list[Attachment]:
         return self._attachments
+
+    def mark_processed(self, attachment: Attachment) -> None:
+        self.processed.append(attachment.sha256)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeRecogniser:
@@ -156,12 +164,28 @@ def test_pipeline_preserves_existing_tags() -> None:
 def test_pipeline_no_match_writes_nothing() -> None:
     ledger = FakeLedger([_transaction()])
     report = CapturingReportWriter()
+    source = FakeSource([_attachment()])
     run(
         _settings(),
-        source=FakeSource([_attachment()]),
+        source=source,
         recogniser=FakeRecogniser("Totaal te betalen  EUR 9,99"),  # amount won't match
         ledger=ledger,
         report_writer=report,
     )
     assert ledger.attached == []
     assert report.results[0].outcome.value == "no_match"
+    # Unmatched -> NOT marked processed (so it is retried), but the source is still closed.
+    assert source.processed == []
+    assert source.closed is True
+
+
+def test_pipeline_marks_source_processed_when_attached() -> None:
+    source = FakeSource([_attachment()])
+    run(
+        _settings(),
+        source=source,
+        recogniser=FakeRecogniser(_MATCHING_TEXT),
+        ledger=FakeLedger([_transaction()]),
+        report_writer=CapturingReportWriter(),
+    )
+    assert source.processed == ["hash-1"]  # attached -> marked processed

@@ -1,18 +1,20 @@
 """The read-surface abstraction for incoming documents.
 
 `AttachmentSource` is the seam between the orchestration and wherever attachments come from
-(an IMAP inbox today; a folder, an API, or a fake in tests).
+(an IMAP inbox today; a folder, an API, or a fake in tests). `mark_processed` is called only
+after a document has been attached, so unmatched emails stay unprocessed and get retried.
 """
 
 from __future__ import annotations
 
 import hashlib
+import imaplib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from firefly_bot.config import ImapSettings
-from firefly_bot.ingest.imap import fetch_attachments
+from firefly_bot.ingest import imap
 from firefly_bot.models import Attachment
 
 _CONTENT_TYPES = {
@@ -25,16 +27,35 @@ _CONTENT_TYPES = {
 
 class AttachmentSource(Protocol):
     def fetch(self) -> list[Attachment]: ...
+    def mark_processed(self, attachment: Attachment) -> None: ...
+    def close(self) -> None: ...
 
 
 class ImapAttachmentSource:
-    """Default source: pull document attachments from an IMAP mailbox."""
+    """Pull unprocessed document attachments from an IMAP mailbox; flag them once attached."""
 
     def __init__(self, settings: ImapSettings) -> None:
         self._settings = settings
+        self._conn: imaplib.IMAP4_SSL | None = None
 
     def fetch(self) -> list[Attachment]:
-        return fetch_attachments(self._settings)
+        self._conn = imap.connect(self._settings)
+        out: list[Attachment] = []
+        for uid in imap.search_unprocessed(self._conn, self._settings.processed_keyword):
+            out.extend(imap.fetch_attachments_for(self._conn, uid, self._settings))
+        return out
+
+    def mark_processed(self, attachment: Attachment) -> None:
+        if self._conn is not None and attachment.source_uid is not None:
+            imap.mark_processed(self._conn, attachment.source_uid, self._settings.processed_keyword)
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.logout()
+            except OSError:
+                pass
+            self._conn = None
 
 
 class FolderAttachmentSource:
@@ -61,3 +82,9 @@ class FolderAttachmentSource:
                 )
             )
         return out
+
+    def mark_processed(self, attachment: Attachment) -> None:
+        return None
+
+    def close(self) -> None:
+        return None

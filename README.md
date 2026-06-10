@@ -50,6 +50,14 @@ To test against local documents instead of an inbox (no IMAP needed):
 uv run firefly-bot run --dry-run -v --source folder --folder samples/invoices
 ```
 
+### Email ingestion
+
+Point it at a dedicated IMAP mailbox that only receives invoice emails (default `--source imap`).
+Each run fetches only **unprocessed** messages (those without the `IMAP_PROCESSED_KEYWORD`
+keyword), and a message is flagged processed **only after its invoice is attached** — so an
+invoice that arrives before its bank transaction (or one with a human error) stays unprocessed
+and is retried on the next run, and is reported as "not attached". **Emails are never deleted.**
+
 Matching uses the **invoice number** (found in the transaction reference), **amount**, IBAN and
 **invoice date**. Auto-attach requires the invoice number to appear in the transaction plus a
 corroborating amount/IBAN; weaker matches are attached with the `needs-review` tag.

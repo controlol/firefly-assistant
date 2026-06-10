@@ -1,7 +1,7 @@
-"""IMAP ingestion: pull candidate document attachments from a mailbox.
+"""Low-level IMAP helpers (stdlib only).
 
-Uses only the stdlib (`imaplib`, `email`) to keep dependencies light. Returns typed
-`Attachment` objects; dedup is by SHA-256 so re-running over an already-seen message is safe.
+Messages are addressed by UID (stable across the session) so a message can be fetched and later
+marked processed. "Processed" is a custom IMAP keyword — the email is flagged, never deleted.
 """
 
 from __future__ import annotations
@@ -17,32 +17,38 @@ from firefly_bot.config import ImapSettings
 from firefly_bot.models import Attachment
 
 
-def fetch_attachments(settings: ImapSettings) -> list[Attachment]:
-    """Connect, fetch unseen messages, and return their document attachments."""
-    attachments: list[Attachment] = []
-    with _connect(settings) as conn:
-        conn.select(settings.mailbox)
-        typ, data = conn.search(None, "UNSEEN")
-        if typ != "OK":
-            return attachments
-        for num in data[0].split():
-            typ, msg_data = conn.fetch(num, "(RFC822)")
-            if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
-                continue
-            message = email.message_from_bytes(msg_data[0][1])
-            attachments.extend(_extract_parts(message, settings))
-            if settings.mark_seen:
-                conn.store(num, "+FLAGS", "\\Seen")
-    return attachments
-
-
-def _connect(settings: ImapSettings) -> imaplib.IMAP4_SSL:
+def connect(settings: ImapSettings) -> imaplib.IMAP4_SSL:
     conn = imaplib.IMAP4_SSL(settings.host, settings.port)
     conn.login(settings.username, settings.password.get_secret_value())
+    conn.select(settings.mailbox)
     return conn
 
 
-def _extract_parts(message: Message, settings: ImapSettings) -> list[Attachment]:
+def search_unprocessed(conn: imaplib.IMAP4_SSL, keyword: str) -> list[bytes]:
+    """UIDs of messages not yet marked with the processed keyword."""
+    typ, data = conn.uid("search", "UNKEYWORD", keyword)
+    if typ != "OK" or not data or not data[0]:
+        return []
+    uids: list[bytes] = data[0].split()
+    return uids
+
+
+def fetch_attachments_for(
+    conn: imaplib.IMAP4_SSL, uid: bytes, settings: ImapSettings
+) -> list[Attachment]:
+    uid_str = uid.decode()
+    typ, msg_data = conn.uid("fetch", uid_str, "(RFC822)")
+    if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+        return []
+    message = email.message_from_bytes(msg_data[0][1])
+    return _extract_parts(message, uid_str, settings)
+
+
+def mark_processed(conn: imaplib.IMAP4_SSL, uid: str, keyword: str) -> None:
+    conn.uid("store", uid, "+FLAGS", f"({keyword})")
+
+
+def _extract_parts(message: Message, uid: str, settings: ImapSettings) -> list[Attachment]:
     out: list[Attachment] = []
     message_id = message.get("Message-ID", "")
     received_at = _parse_date(message.get("Date"))
@@ -65,6 +71,7 @@ def _extract_parts(message: Message, settings: ImapSettings) -> list[Attachment]
                 sha256=hashlib.sha256(payload).hexdigest(),
                 source_message_id=message_id,
                 received_at=received_at,
+                source_uid=uid,
             )
         )
     return out

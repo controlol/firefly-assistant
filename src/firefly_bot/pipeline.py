@@ -27,6 +27,9 @@ from firefly_bot.report.summary import ReportWriter, XlsxReportWriter
 
 log = logging.getLogger("firefly_bot")
 
+# Outcomes where the document was attached to a transaction (so the source can be marked done).
+_ATTACHED_OUTCOMES = frozenset({MatchOutcome.AUTO_ATTACHED, MatchOutcome.ATTACHED_NEEDS_REVIEW})
+
 
 def run(
     settings: Settings,
@@ -63,11 +66,22 @@ def run(
         transactions = ledger.list_transactions(start=window[0], end=window[1])
         log.info("Loaded %d candidate transaction(s)", len(transactions))
 
-        results = [_process(inv, transactions, ledger, settings) for inv in invoices]
+        results: list[MatchResult] = []
+        for inv in invoices:
+            result = _process(inv, transactions, ledger, settings)
+            if result.outcome in _ATTACHED_OUTCOMES:
+                # Only flag the source once attached, so unmatched documents are retried.
+                source.mark_processed(inv.source)
+            results.append(result)
+
+        unresolved = sum(1 for r in results if r.outcome not in _ATTACHED_OUTCOMES)
+        if unresolved:
+            log.warning("%d document(s) not attached — left for retry/review", unresolved)
         path = report_writer.write(results, settings.report_dir)
         log.info("Wrote report: %s", path)
         return path
     finally:
+        source.close()
         if owns_ledger:
             ledger.close()
 

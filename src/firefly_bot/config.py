@@ -27,7 +27,9 @@ class ImapSettings(BaseSettings):
         "image/png",
         "image/jpeg",
     )
-    mark_seen: bool = True
+    # Custom IMAP keyword set on a message once its invoice has been attached. Messages with this
+    # keyword are skipped on the next run; emails are never deleted.
+    processed_keyword: str = "FireflyProcessed"
 
 
 class FireflySettings(BaseSettings):
