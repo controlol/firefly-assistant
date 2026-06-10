@@ -40,10 +40,10 @@ def match_invoice(
             detail="No amount or invoice number could be extracted.",
         )
 
+    candidates = score_candidates(invoice, transactions, settings)
     best: tuple[float, FireflyTransaction] | None = None
-    for txn in transactions:
-        score = _score(invoice, txn, settings)
-        if score > 0 and (best is None or score > best[0]):
+    for txn, score, _features in candidates:
+        if best is None or score > best[0]:
             best = (score, txn)
 
     if best is None:
@@ -68,6 +68,26 @@ def match_invoice(
     )
 
 
+def score_candidates(
+    invoice: ExtractedInvoice,
+    transactions: list[FireflyTransaction],
+    settings: MatchingSettings,
+) -> list[tuple[FireflyTransaction, float, dict[str, str | float | bool | None]]]:
+    """Score every transaction, returning each positively-scored candidate with its features.
+
+    This is the shared, side-effect-free core of matching: `match_invoice` picks the best of these
+    for its decision, and the pipeline logs *all* of them (winner + losers) as `LabelRecord`s so a
+    future scorer has the negative examples it needs. The feature dict is the same raw signal the
+    additive heuristic consumes, exposed so it can be re-featurised later.
+    """
+    out: list[tuple[FireflyTransaction, float, dict[str, str | float | bool | None]]] = []
+    for txn in transactions:
+        score, features = _score(invoice, txn, settings)
+        if score > 0:
+            out.append((txn, score, features))
+    return out
+
+
 def _number_hit(invoice: ExtractedInvoice, txn: FireflyTransaction) -> bool:
     if not invoice.invoice_number:
         return False
@@ -79,30 +99,46 @@ def _number_hit(invoice: ExtractedInvoice, txn: FireflyTransaction) -> bool:
 
 def _score(
     invoice: ExtractedInvoice, txn: FireflyTransaction, settings: MatchingSettings
-) -> float:
+) -> tuple[float, dict[str, str | float | bool | None]]:
+    """Return the additive score and the raw feature dict for one (invoice, txn) pair."""
     number_hit = _number_hit(invoice, txn)
     amount_hit = (
         invoice.total_amount is not None
         and abs(abs(txn.amount) - invoice.total_amount) <= settings.amount_tolerance
     )
+    iban_match = bool(
+        invoice.counterparty_iban
+        and invoice.counterparty_iban in {txn.source_iban, txn.destination_iban}
+    )
+    amount_delta = (
+        float(abs(abs(txn.amount) - invoice.total_amount))
+        if invoice.total_amount is not None
+        else None
+    )
+    date_delta = (
+        (txn.date - invoice.invoice_date).days if invoice.invoice_date is not None else None
+    )
+    features: dict[str, str | float | bool | None] = {
+        "number_match": number_hit,
+        "amount_match": amount_hit,
+        "iban_match": iban_match,
+        "amount_delta": amount_delta,
+        "date_delta": date_delta,
+    }
+
     if not (number_hit or amount_hit):
-        return 0.0
+        return 0.0, features
 
     score = 0.0
     if number_hit:
         score += 0.6
     if amount_hit:
         score += 0.4
-    if invoice.counterparty_iban and invoice.counterparty_iban in {
-        txn.source_iban,
-        txn.destination_iban,
-    }:
+    if iban_match:
         score += 0.2
-    if invoice.invoice_date is not None:
-        days = abs((txn.date - invoice.invoice_date).days)
-        if days <= settings.date_window_days:
-            score += 0.1 * (1 - days / settings.date_window_days)
-    return min(score, 1.0)
+    if date_delta is not None and abs(date_delta) <= settings.date_window_days:
+        score += 0.1 * (1 - abs(date_delta) / settings.date_window_days)
+    return min(score, 1.0), features
 
 
 def _explain(
