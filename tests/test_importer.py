@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from firefly_bot.banking.camt import BankStatement, BankTransaction
 from firefly_bot.banking.importer import import_statement
-from firefly_bot.models import FireflyAccount
+from firefly_bot.labels import JsonlLabelStore
+from firefly_bot.models import CategorySuggestion, FireflyAccount, LabelRecord
+
+
+def _tags(split: dict[str, object]) -> list[str]:
+    tags = split.get("tags")
+    return tags if isinstance(tags, list) else []
+
+
+class FakeLabelStore:
+    def __init__(self) -> None:
+        self.records: list[LabelRecord] = []
+
+    def record(self, record: LabelRecord) -> None:
+        self.records.append(record)
+
+    def close(self) -> None:
+        return None
 
 
 class FakeWriter:
@@ -106,3 +125,183 @@ def test_mcc_sets_category_on_card_payment() -> None:
     # The transfer must not be categorised.
     transfer = next(t for t in writer.created_txns if t["type"] == "transfer")
     assert "category_name" not in transfer
+
+
+def test_emits_category_and_merchant_labels_per_transaction() -> None:
+    writer = FakeWriter()
+    store = FakeLabelStore()
+    import_statement(
+        _statement(), writer, owner_name="J. Jansen", label_store=store
+    )
+    categories = [r for r in store.records if r.kind == "category"]
+    merchants = [r for r in store.records if r.kind == "merchant"]
+    # One of each per transaction (3 transactions).
+    assert len(categories) == 3
+    assert len(merchants) == 3
+    # The MCC-tagged Albert Heijn row predicts a category; features carry the raw inputs.
+    ah = next(r for r in categories if r.features["mcc"] == "5411")
+    assert ah.predicted == "Boodschappen"
+    assert ah.features["counterparty_name"] == "Albert Heijn 2264"
+    # The two AH variants normalise to the same merchant key (dedup signal for Phase 2).
+    ah_merchants = [r for r in merchants if "albert" in str(r.features["merchant_key"])]
+    assert {r.features["merchant_key"] for r in ah_merchants} == {"albert heijn"}
+    assert all(r.source == "auto" and r.corrected is None for r in store.records)
+
+
+class FakeCategoriser:
+    """Tiny stub returning canned suggestions per counterparty — no model, no network.
+
+    Mirrors the two methods the importer calls on the real `Categoriser`: `suggest` returns a
+    pre-seeded `CategorySuggestion` (default: none/needs-review), and `is_auto` applies the same
+    confidence policy as the real one (mcc always; knn >= knn_trust; zeroshot >= gate).
+    """
+
+    def __init__(
+        self,
+        suggestions: dict[str, CategorySuggestion],
+        *,
+        gate: float = 0.83,
+        knn_trust: float = 0.90,
+    ) -> None:
+        self._suggestions = suggestions
+        self._gate = gate
+        self._knn_trust = knn_trust
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def suggest(
+        self, counterparty_name: str, description: str, mcc: str | None
+    ) -> CategorySuggestion:
+        self.calls.append((counterparty_name, description, mcc))
+        return self._suggestions.get(
+            counterparty_name,
+            CategorySuggestion(label=None, confidence=0.0, provenance="none"),
+        )
+
+    def is_auto(self, s: CategorySuggestion) -> bool:
+        if s.provenance == "mcc":
+            return True
+        if s.provenance == "knn":
+            return s.confidence >= self._knn_trust
+        if s.provenance == "zeroshot":
+            return s.confidence >= self._gate
+        return False
+
+
+def test_confident_suggestion_sets_category_name() -> None:
+    writer = FakeWriter()
+    categoriser = FakeCategoriser(
+        {
+            "Albert Heijn 2277": CategorySuggestion(
+                label="Boodschappen", confidence=0.95, provenance="knn", evidence="Albert Heijn"
+            )
+        }
+    )
+    import_statement(
+        _statement(),
+        writer,
+        owner_name="J. Jansen",
+        categoriser=categoriser,  # type: ignore[arg-type]  # structural stub, not a subclass
+    )
+    row = next(t for t in writer.created_txns if t["amount"] == "12.00")
+    assert row["category_name"] == "Boodschappen"
+    assert "needs-review" not in _tags(row)
+
+
+def test_weak_suggestion_leaves_category_unset_and_flags_review() -> None:
+    writer = FakeWriter()
+    categoriser = FakeCategoriser(
+        {
+            "Albert Heijn 2277": CategorySuggestion(
+                label="Boodschappen", confidence=0.50, provenance="knn", evidence="x"
+            )
+        }
+    )
+    import_statement(
+        _statement(),
+        writer,
+        owner_name="J. Jansen",
+        categoriser=categoriser,  # type: ignore[arg-type]  # structural stub, not a subclass
+        needs_review_tag="needs-review",
+    )
+    row = next(t for t in writer.created_txns if t["amount"] == "12.00")
+    assert "category_name" not in row  # weak k-NN -> not auto-applied
+    assert "needs-review" in _tags(row)  # routed to review
+
+
+def test_category_label_record_carries_provenance_and_confidence() -> None:
+    writer = FakeWriter()
+    store = FakeLabelStore()
+    categoriser = FakeCategoriser(
+        {
+            "Albert Heijn 2277": CategorySuggestion(
+                label="Boodschappen",
+                confidence=0.88,
+                provenance="zeroshot",
+                evidence="Boodschappen",
+            )
+        }
+    )
+    import_statement(
+        _statement(),
+        writer,
+        owner_name="J. Jansen",
+        label_store=store,
+        categoriser=categoriser,  # type: ignore[arg-type]  # structural stub, not a subclass
+    )
+    rec = next(
+        r
+        for r in store.records
+        if r.kind == "category" and r.features["counterparty_name"] == "Albert Heijn 2277"
+    )
+    assert rec.predicted == "Boodschappen"
+    assert rec.score == 0.88
+    assert rec.features["provenance"] == "zeroshot"
+
+
+def test_transfers_are_never_categorised_with_a_categoriser() -> None:
+    writer = FakeWriter()
+    # Even if the stub would return a confident suggestion, transfers must stay uncategorised and
+    # the categoriser must not even be consulted for them.
+    categoriser = FakeCategoriser(
+        {
+            "J. Jansen": CategorySuggestion(
+                label="Boodschappen", confidence=1.0, provenance="knn", evidence="x"
+            )
+        }
+    )
+    import_statement(
+        _statement(),
+        writer,
+        owner_name="J. Jansen",
+        categoriser=categoriser,  # type: ignore[arg-type]  # structural stub, not a subclass
+    )
+    transfer = next(t for t in writer.created_txns if t["type"] == "transfer")
+    assert "category_name" not in transfer
+    assert ("J. Jansen", "van spaar", None) not in categoriser.calls
+
+
+def test_none_categoriser_is_byte_identical_to_mcc_only() -> None:
+    baseline = FakeWriter()
+    import_statement(_statement(), baseline, owner_name="J. Jansen")
+    with_none = FakeWriter()
+    import_statement(_statement(), with_none, owner_name="J. Jansen", categoriser=None)
+    assert with_none.created_txns == baseline.created_txns
+
+
+def test_jsonl_label_store_round_trips_a_record(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "labels.jsonl"  # parent dir does not exist yet
+    store = JsonlLabelStore(path)
+    rec = LabelRecord(
+        ts=datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
+        kind="category",
+        features={"mcc": "5411", "amount_delta": 0.0, "iban_match": True, "missing": None},
+        predicted="Boodschappen",
+        score=1.0,
+        source="auto",
+    )
+    store.record(rec)
+    store.close()
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert LabelRecord.model_validate_json(lines[0]) == rec

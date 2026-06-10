@@ -9,15 +9,18 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
 from pydantic import BaseModel
 
-from firefly_bot.banking.accounts import AccountResolver
-from firefly_bot.banking.camt import BankStatement
+from firefly_bot.banking.accounts import AccountResolver, normalise_merchant
+from firefly_bot.banking.camt import BankStatement, BankTransaction, reconciles
 from firefly_bot.banking.mcc import category_for_mcc
-from firefly_bot.models import FireflyAccount
+from firefly_bot.enrich.categoriser import Categoriser
+from firefly_bot.labels import LabelStore, NullLabelStore
+from firefly_bot.models import FireflyAccount, LabelRecord
 
 log = logging.getLogger("firefly_bot.import")
 
@@ -46,10 +49,91 @@ class ImportSummary(BaseModel):
     transfers: int
     asset_account_id: str
     savings_account_ids: dict[str, str]
+    # Whether the statement's opening + entries == closing. None when balances are absent.
+    reconciled: bool | None = None
 
 
 def _norm_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _capture_tx_labels(
+    store: LabelStore,
+    tx: BankTransaction,
+    category: str | None,
+    opposing_id: str | None,
+    *,
+    category_score: float = 1.0,
+    provenance: str = "mcc",
+) -> None:
+    """Emit one `category` and one `merchant` LabelRecord for a transaction (Phase 1 capture).
+
+    `category.predicted` is the categoriser's chosen label (None when undetermined / routed to
+    review); `category.score` is its confidence and `features["provenance"]` records *why* it was
+    chosen (`mcc` | `knn` | `zeroshot` | `none`), so a future scorer can weight sources differently.
+    `merchant.predicted` is the resolved/created opposing account id. Both log the raw inputs so a
+    future enricher can re-featurise. The merchant `score` stays 1.0 — the IBAN/fuzzy resolver is a
+    deterministic, high-precision decision, not a probabilistic one.
+    """
+    ts = datetime.now(tz=UTC)
+    store.record(
+        LabelRecord(
+            ts=ts,
+            kind="category",
+            features={
+                "mcc": tx.mcc,
+                "counterparty_name": tx.counterparty_name,
+                "description": tx.description,
+                "provenance": provenance,
+            },
+            predicted=category,
+            score=category_score,
+            source="auto",
+        )
+    )
+    store.record(
+        LabelRecord(
+            ts=ts,
+            kind="merchant",
+            features={
+                "counterparty_name": tx.counterparty_name,
+                "counterparty_iban": tx.counterparty_iban,
+                "merchant_key": normalise_merchant(tx.counterparty_name),
+            },
+            predicted=opposing_id,
+            score=1.0,
+            source="auto",
+        )
+    )
+
+
+def _categorise(
+    tx: BankTransaction,
+    is_transfer: bool,
+    categoriser: Categoriser | None,
+    split: dict[str, object],
+    needs_review_tag: str,
+) -> tuple[str | None, float, str]:
+    """Decide a transaction's category and return (label, confidence, provenance).
+
+    Transfers stay uncategorised. With no categoriser this is the historical MCC-only behaviour
+    (provenance ``mcc``, confidence 1.0). With a categoriser, the full cascade runs: confident
+    suggestions (``categoriser.is_auto``) set the category; weak/none ones leave it unset and get
+    the ``needs_review_tag`` appended — the bot never auto-writes a guess it isn't sure of.
+    """
+    if is_transfer:
+        return None, 1.0, "mcc"
+    if categoriser is None:
+        return category_for_mcc(tx.mcc), 1.0, "mcc"
+
+    suggestion = categoriser.suggest(tx.counterparty_name, tx.description, tx.mcc)
+    if categoriser.is_auto(suggestion) and suggestion.label:
+        return suggestion.label, suggestion.confidence, suggestion.provenance
+    # Weak / none: do not set a category; flag for human review.
+    tags = split.setdefault("tags", [])
+    if isinstance(tags, list) and needs_review_tag not in tags:
+        tags.append(needs_review_tag)
+    return None, suggestion.confidence, suggestion.provenance
 
 
 def import_statement(
@@ -62,7 +146,12 @@ def import_statement(
     extra_tags: tuple[str, ...] = (),
     skip_duplicates: bool = True,
     dry_run: bool = False,
+    label_store: LabelStore | None = None,
+    categoriser: Categoriser | None = None,
+    needs_review_tag: str = "needs-review",
 ) -> ImportSummary:
+    # Default to a no-op store on dry-run (mirrors the ledger), otherwise accumulate signal.
+    store: LabelStore = label_store or NullLabelStore()
     own = _own_accounts(statement, owner_name, own_ibans)
 
     asset_id = "" if dry_run else writer.ensure_asset_account(
@@ -91,9 +180,19 @@ def import_statement(
         }
         if tx.reference:
             split["external_id"] = tx.reference[:255]
-        category = None if is_transfer else category_for_mcc(tx.mcc)
+        category, score, provenance = _categorise(
+            tx, is_transfer, categoriser, split, needs_review_tag
+        )
         if category:
             split["category_name"] = category
+        _capture_tx_labels(
+            store,
+            tx,
+            category,
+            opposing.get(index),
+            category_score=score,
+            provenance=provenance,
+        )
 
         if is_transfer:
             assert tx.counterparty_iban is not None  # implied by is_transfer
@@ -130,6 +229,7 @@ def import_statement(
         transfers=transfers,
         asset_account_id=asset_id,
         savings_account_ids=savings,
+        reconciled=reconciles(statement),
     )
 
 

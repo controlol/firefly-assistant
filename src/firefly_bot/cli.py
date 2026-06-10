@@ -1,18 +1,25 @@
-"""Command-line entrypoint: `firefly-bot run` and `firefly-bot import`."""
+"""Command-line entrypoint: `firefly-bot run`, `import`, and `bootstrap`."""
 
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from firefly_bot.banking.camt import parse_camt053
 from firefly_bot.banking.importer import import_statement
-from firefly_bot.config import BankSettings, FireflySettings, load_settings
+from firefly_bot.config import Settings, load_settings
+from firefly_bot.enrich.bootstrap import bootstrap_labels
 from firefly_bot.firefly.client import FireflyClient
 from firefly_bot.ingest.source import AttachmentSource, FolderAttachmentSource
+from firefly_bot.labels import JsonlLabelStore, NullLabelStore, read_labels
 from firefly_bot.pipeline import run
+
+if TYPE_CHECKING:
+    from firefly_bot.enrich import Categoriser
 
 log = logging.getLogger("firefly_bot")
 
@@ -36,6 +43,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     import_p.add_argument("--camt", required=True, help="Path to the CAMT.053 .xml file.")
 
+    bootstrap_p = sub.add_parser(
+        "bootstrap",
+        parents=[common],
+        help="Seed labels.jsonl from existing categorised Firefly history (read-only).",
+    )
+    window = bootstrap_p.add_mutually_exclusive_group()
+    window.add_argument(
+        "--days", type=int, default=365, help="Look back this many days (default: 365)."
+    )
+    window.add_argument("--since", help="Look back from this date (YYYY-MM-DD) instead of --days.")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -46,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run(args)
     if args.command == "import":
         return _import(Path(args.camt), dry_run=args.dry_run)
+    if args.command == "bootstrap":
+        return _bootstrap(args)
     return 1
 
 
@@ -63,14 +83,18 @@ def _run(args: argparse.Namespace) -> int:
 
 def _import(camt_path: Path, *, dry_run: bool) -> int:
     statement = parse_camt053(camt_path)
-    bank = BankSettings()
+    settings = load_settings()
+    bank = settings.bank
     log.info(
         "Parsed %d entries for %s (%s)",
         len(statement.transactions),
         statement.account_iban,
         statement.currency,
     )
-    with FireflyClient(FireflySettings()) as client:
+    # Mirror the ledger: suppress label writes on dry-run, otherwise accumulate to labels.jsonl.
+    label_store = NullLabelStore() if dry_run else JsonlLabelStore(settings.labels_path)
+    categoriser = _build_categoriser(settings)
+    with FireflyClient(settings.firefly) as client:
         summary = import_statement(
             statement,
             client,
@@ -78,13 +102,83 @@ def _import(camt_path: Path, *, dry_run: bool) -> int:
             own_ibans=frozenset(bank.own_ibans),
             account_name=bank.account_name,
             dry_run=dry_run,
+            label_store=label_store,
+            categoriser=categoriser,
+            needs_review_tag=settings.matching.needs_review_tag,
         )
+    label_store.close()
     prefix = "(dry-run) " if dry_run else ""
     print(
         f"{prefix}Import: parsed {summary.total}, created {summary.created}, "
         f"duplicates {summary.duplicates}, errors {summary.errors}, transfers {summary.transfers}"
     )
     return 1 if summary.errors else 0
+
+
+def _build_categoriser(settings: Settings) -> Categoriser | None:
+    """Build the Phase 2 categoriser from seeded labels, or None for MCC-only behaviour.
+
+    Lazy by design: when enrichment is disabled or there are no seeded labels, we return None and
+    never touch the embedder — so an import without enrichment never loads the e5 model. Only when
+    `settings.enrich.enabled` AND `labels.jsonl` has `category`-kind examples do we import the
+    enrich package, construct the embedder, and build the categoriser. The label inventory is the
+    example labels plus every category the MCC map can emit (the Categoriser unions in MCC names
+    itself); zero-shot can therefore place a named-but-exampleless category from day one.
+    """
+    if not settings.enrich.enabled:
+        return None
+    examples = [
+        rec
+        for rec in read_labels(settings.labels_path)
+        if rec.kind == "category" and rec.predicted is not None
+    ]
+    if not examples:
+        return None
+    # Lazy import: only pay the enrich/embedder cost when we actually categorise.
+    from firefly_bot.enrich import Categoriser as _Categoriser
+    from firefly_bot.enrich import E5Embedder
+
+    inventory = {rec.predicted for rec in examples if rec.predicted}
+    return _Categoriser(
+        examples,
+        inventory,
+        E5Embedder(model_name=settings.enrich.model_name),
+        gate=settings.enrich.gate,
+        knn_trust=settings.enrich.knn_trust,
+    )
+
+
+def _bootstrap(args: argparse.Namespace) -> int:
+    """Read-only pass over existing Firefly history → seed labels.jsonl for the Phase 2 enricher."""
+    settings = load_settings()
+    if args.since:
+        start = date.fromisoformat(args.since)
+    else:
+        start = (datetime.now(tz=UTC) - timedelta(days=args.days)).date()
+    end = datetime.now(tz=UTC).date()
+
+    # Prior seeds make the run idempotent — re-running never duplicates a record.
+    existing = list(read_labels(settings.labels_path))
+
+    if args.dry_run:
+        log.info("DRY RUN — no writes to labels.jsonl.")
+        store: JsonlLabelStore | NullLabelStore = NullLabelStore()
+    else:
+        store = JsonlLabelStore(settings.labels_path)
+
+    with FireflyClient(settings.firefly) as client:
+        transactions = client.list_transactions(start=start, end=end)
+        summary = bootstrap_labels(transactions, store, existing=existing)
+    store.close()
+
+    prefix = "(dry-run) " if args.dry_run else ""
+    print(
+        f"{prefix}Bootstrap ({start} to {end}): scanned {summary.scanned}, "
+        f"categorised {summary.categorised}, category records {summary.category_records}, "
+        f"merchant records {summary.merchant_records}, "
+        f"skipped duplicates {summary.skipped_duplicates}"
+    )
+    return 0
 
 
 if __name__ == "__main__":
