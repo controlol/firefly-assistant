@@ -20,6 +20,7 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
     "pytest>=8.0",
+    "rapidfuzz>=3.0",  # used by scripts/firefly_fixture.py for opposing-account dedup
 ]
 # Alternative OCR engine. Note: paddle 3.x currently fails the PP-OCRv3 graphs on CPU/Windows;
 # RapidOCR is the supported default. Only install this if you specifically need PaddleOCR.

@@ -26,6 +26,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import httpx
+from rapidfuzz import fuzz, process
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
@@ -35,6 +36,10 @@ from firefly_bot.config import FireflySettings  # noqa: E402
 _NS = {"c": "urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"}
 _FIXTURE_TAG = "bot-fixture"
 _ACCOUNT_MARKER = "[bot-fixture]"
+# Opposing-account dedup: a counterparty whose normalised name scores >= this against an
+# existing account is treated as the same account (reused) rather than creating a duplicate.
+_FUZZY_THRESHOLD = 90
+_LEGAL_SUFFIX = r"\b(b\.?v\.?|n\.?v\.?|gmbh|ltd|inc|s\.?a\.?r\.?l\.?|sa|sca|scs|cv|vof)\b"
 
 
 @dataclass(frozen=True)
@@ -166,6 +171,58 @@ def _show_on_dashboard(client: httpx.Client, account_ids: list[str]) -> None:
         print(f"  (could not update dashboard preference: {exc})")
 
 
+def _normalise_merchant(name: str) -> str:
+    """Canonical merchant key: drop processor prefixes, store numbers, legal forms, punctuation."""
+    text = name.lower().strip()
+    if "*" in text:  # processor*merchant (e.g. "BCK*Vue Cinemas", "Zettle_*RUIS") -> merchant
+        text = text.split("*")[-1]
+    text = re.sub(_LEGAL_SUFFIX, " ", text)
+    text = re.sub(r"\s+\d{2,}\b", " ", text)  # trailing store / terminal numbers
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+class AccountResolver:
+    """Resolves a counterparty to an existing opposing account, or signals to create one.
+
+    Expense and revenue accounts are tracked separately because Firefly will not accept an
+    expense account where a revenue account is required (and vice versa). Within a role, IBAN is
+    the exact key; otherwise the normalised name is matched exactly, then fuzzily (rapidfuzz).
+    Reuse avoids duplicate "Albert Heijn 2264 / 2277" accounts.
+    """
+
+    def __init__(self, client: httpx.Client) -> None:
+        self._by_iban: dict[str, dict[str, str]] = {"expense": {}, "revenue": {}}
+        self._by_norm: dict[str, dict[str, str]] = {"expense": {}, "revenue": {}}
+        for role in ("expense", "revenue"):
+            for account in _all_accounts(client, role):
+                attrs = account["attributes"]  # type: ignore[index]
+                self.register(attrs["name"], attrs.get("iban"), str(account["id"]), role)
+
+    def resolve(self, name: str, iban: str | None, role: str) -> str | None:
+        """Return an existing account id of this role to reuse, or None to create one."""
+        by_iban, by_norm = self._by_iban[role], self._by_norm[role]
+        if iban and iban in by_iban:
+            return by_iban[iban]
+        norm = _normalise_merchant(name)
+        if not norm:
+            return None
+        if norm in by_norm:
+            return by_norm[norm]
+        if by_norm:
+            match = process.extractOne(norm, list(by_norm.keys()), scorer=fuzz.token_sort_ratio)
+            if match is not None and match[1] >= _FUZZY_THRESHOLD:
+                return by_norm[match[0]]
+        return None
+
+    def register(self, name: str, iban: str | None, account_id: str, role: str) -> None:
+        if iban:
+            self._by_iban[role].setdefault(iban, account_id)
+        norm = _normalise_merchant(name)
+        if norm:
+            self._by_norm[role].setdefault(norm, account_id)
+
+
 def seed(camt_path: Path, owner_name: str | None = None) -> None:
     account_iban, currency, entries = parse_camt(camt_path)
     owner_key = _normalise_name(owner_name) if owner_name else None
@@ -191,7 +248,8 @@ def seed(camt_path: Path, owner_name: str | None = None) -> None:
         _show_on_dashboard(client, [asset_id, *savings_ids.values()])
         print(f"Main account id: {asset_id}; savings: {savings_ids or 'none'}")
 
-        created = transfers = 0
+        resolver = AccountResolver(client)
+        created = transfers = reused = 0
         for entry in entries:
             split: dict[str, object] = {
                 "date": entry.date,
@@ -199,24 +257,28 @@ def seed(camt_path: Path, owner_name: str | None = None) -> None:
                 "description": entry.description,
                 "tags": [_FIXTURE_TAG],
             }
+            own_side = "source" if entry.is_withdrawal else "destination"
+            opposite = "destination" if entry.is_withdrawal else "source"
             if entry.counterparty_iban in savings_ids:
                 own_id = savings_ids[entry.counterparty_iban]
                 split["type"] = "transfer"
                 src, dst = (asset_id, own_id) if entry.is_withdrawal else (own_id, asset_id)
                 split["source_id"], split["destination_id"] = src, dst
                 transfers += 1
-            elif entry.is_withdrawal:
-                split["type"] = "withdrawal"
-                split["source_id"] = asset_id
-                split["destination_name"] = entry.counterparty_name
-                if entry.counterparty_iban:
-                    split["destination_iban"] = entry.counterparty_iban
             else:
-                split["type"] = "deposit"
-                split["destination_id"] = asset_id
-                split["source_name"] = entry.counterparty_name
-                if entry.counterparty_iban:
-                    split["source_iban"] = entry.counterparty_iban
+                split["type"] = "withdrawal" if entry.is_withdrawal else "deposit"
+                role = "expense" if entry.is_withdrawal else "revenue"
+                split[f"{own_side}_id"] = asset_id
+                existing_id = resolver.resolve(
+                    entry.counterparty_name, entry.counterparty_iban, role
+                )
+                if existing_id is not None:
+                    split[f"{opposite}_id"] = existing_id
+                    reused += 1
+                else:
+                    split[f"{opposite}_name"] = entry.counterparty_name
+                    if entry.counterparty_iban:
+                        split[f"{opposite}_iban"] = entry.counterparty_iban
             resp = client.post(
                 "/api/v1/transactions",
                 json={"apply_rules": False, "fire_webhooks": False, "transactions": [split]},
@@ -225,9 +287,17 @@ def seed(camt_path: Path, owner_name: str | None = None) -> None:
                 print(f"  ! skipped {entry.date} {entry.amount}: {resp.text[:160]}")
                 continue
             created += 1
+            if split["type"] != "transfer":
+                returned = resp.json()["data"]["attributes"]["transactions"][0]
+                opp_id = returned.get(f"{opposite}_id")
+                if opp_id:
+                    role = "expense" if entry.is_withdrawal else "revenue"
+                    resolver.register(
+                        entry.counterparty_name, entry.counterparty_iban, str(opp_id), role
+                    )
         print(
             f"Created {created}/{len(entries)} transactions "
-            f"({transfers} transfers, tagged {_FIXTURE_TAG})."
+            f"({transfers} transfers, {reused} reused existing accounts, tagged {_FIXTURE_TAG})."
         )
 
 
