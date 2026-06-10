@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import imaplib
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -16,6 +17,8 @@ from typing import Protocol
 from firefly_bot.config import ImapSettings
 from firefly_bot.ingest import imap
 from firefly_bot.models import Attachment
+
+log = logging.getLogger("firefly_bot.imap")
 
 _CONTENT_TYPES = {
     ".pdf": "application/pdf",
@@ -37,12 +40,28 @@ class ImapAttachmentSource:
     def __init__(self, settings: ImapSettings) -> None:
         self._settings = settings
         self._conn: imaplib.IMAP4_SSL | None = None
+        # Messages that arrived without a usable attachment — a human mistake to surface.
+        self.skipped: list[tuple[str, str]] = []
 
     def fetch(self) -> list[Attachment]:
         self._conn = imap.connect(self._settings)
+        self.skipped = []
         out: list[Attachment] = []
         for uid in imap.search_unprocessed(self._conn, self._settings.processed_keyword):
-            out.extend(imap.fetch_attachments_for(self._conn, uid, self._settings))
+            message = imap.fetch_message(self._conn, uid)
+            if message is None:
+                continue
+            attachments = imap.extract_attachments(message, uid.decode(), self._settings)
+            if attachments:
+                out.extend(attachments)
+            else:
+                subject = str(message.get("Subject", "(no subject)"))
+                self.skipped.append((uid.decode(), subject))
+                log.warning(
+                    "Email uid %s %r has no usable attachment — left unprocessed for review",
+                    uid.decode(),
+                    subject,
+                )
         return out
 
     def mark_processed(self, attachment: Attachment) -> None:

@@ -33,22 +33,18 @@ def search_unprocessed(conn: imaplib.IMAP4_SSL, keyword: str) -> list[bytes]:
     return uids
 
 
-def fetch_attachments_for(
-    conn: imaplib.IMAP4_SSL, uid: bytes, settings: ImapSettings
-) -> list[Attachment]:
-    uid_str = uid.decode()
-    typ, msg_data = conn.uid("fetch", uid_str, "(RFC822)")
+def fetch_message(conn: imaplib.IMAP4_SSL, uid: bytes) -> Message | None:
+    typ, msg_data = conn.uid("fetch", uid.decode(), "(RFC822)")
     if typ != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
-        return []
-    message = email.message_from_bytes(msg_data[0][1])
-    return _extract_parts(message, uid_str, settings)
+        return None
+    return email.message_from_bytes(msg_data[0][1])
 
 
 def mark_processed(conn: imaplib.IMAP4_SSL, uid: str, keyword: str) -> None:
     conn.uid("store", uid, "+FLAGS", f"({keyword})")
 
 
-def _extract_parts(message: Message, uid: str, settings: ImapSettings) -> list[Attachment]:
+def extract_attachments(message: Message, uid: str, settings: ImapSettings) -> list[Attachment]:
     out: list[Attachment] = []
     message_id = message.get("Message-ID", "")
     received_at = _parse_date(message.get("Date"))
