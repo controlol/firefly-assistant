@@ -21,6 +21,7 @@ class FakeSource:
     def __init__(self, attachments: list[Attachment]) -> None:
         self._attachments = attachments
         self.processed: list[str] = []
+        self.flagged: list[str] = []
         self.closed = False
 
     def fetch(self) -> list[Attachment]:
@@ -28,6 +29,9 @@ class FakeSource:
 
     def mark_processed(self, attachment: Attachment) -> None:
         self.processed.append(attachment.sha256)
+
+    def flag_unprocessed(self, attachment: Attachment) -> None:
+        self.flagged.append(attachment.sha256)
 
     def close(self) -> None:
         self.closed = True
@@ -174,8 +178,9 @@ def test_pipeline_no_match_writes_nothing() -> None:
     )
     assert ledger.attached == []
     assert report.results[0].outcome.value == "no_match"
-    # Unmatched -> NOT marked processed (so it is retried), but the source is still closed.
+    # Unmatched -> NOT processed (retried) but flagged for manual review; source still closed.
     assert source.processed == []
+    assert source.flagged == ["hash-1"]
     assert source.closed is True
 
 
@@ -189,3 +194,4 @@ def test_pipeline_marks_source_processed_when_attached() -> None:
         report_writer=CapturingReportWriter(),
     )
     assert source.processed == ["hash-1"]  # attached -> marked processed
+    assert source.flagged == []  # ...and not flagged

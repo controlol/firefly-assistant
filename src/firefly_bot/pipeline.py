@@ -70,8 +70,10 @@ def run(
         for inv in invoices:
             result = _process(inv, transactions, ledger, settings)
             if result.outcome in _ATTACHED_OUTCOMES:
-                # Only flag the source once attached, so unmatched documents are retried.
                 source.mark_processed(inv.source)
+            else:
+                # Couldn't attach — flag for manual investigation, leave for retry.
+                source.flag_unprocessed(inv.source)
             results.append(result)
 
         unresolved = sum(1 for r in results if r.outcome not in _ATTACHED_OUTCOMES)

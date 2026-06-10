@@ -41,6 +41,15 @@ def ensure_folder(conn: imaplib.IMAP4_SSL, folder: str) -> None:
     conn.subscribe(folder)  # so Roundcube shows it
 
 
+def set_flagged(conn: imaplib.IMAP4_SSL, uid: str) -> None:
+    """Star the message (\\Flagged) so it stands out for manual review."""
+    conn.uid("store", uid, "+FLAGS", "(\\Flagged)")
+
+
+def clear_flagged(conn: imaplib.IMAP4_SSL, uid: str) -> None:
+    conn.uid("store", uid, "-FLAGS", "(\\Flagged)")
+
+
 def move(conn: imaplib.IMAP4_SSL, uid: str, folder: str) -> None:
     """Move a message to another folder (kept, not deleted). Falls back to copy+delete."""
     try:

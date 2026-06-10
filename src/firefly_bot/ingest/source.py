@@ -31,6 +31,7 @@ _CONTENT_TYPES = {
 class AttachmentSource(Protocol):
     def fetch(self) -> list[Attachment]: ...
     def mark_processed(self, attachment: Attachment) -> None: ...
+    def flag_unprocessed(self, attachment: Attachment) -> None: ...
     def close(self) -> None: ...
 
 
@@ -60,8 +61,9 @@ class ImapAttachmentSource:
             else:
                 subject = str(message.get("Subject", "(no subject)"))
                 self.skipped.append((uid.decode(), subject))
+                imap.set_flagged(self._conn, uid.decode())  # star it for manual review
                 log.warning(
-                    "Email uid %s %r has no usable attachment — left in inbox for review",
+                    "Email uid %s %r has no usable attachment — flagged for review",
                     uid.decode(),
                     subject,
                 )
@@ -72,8 +74,16 @@ class ImapAttachmentSource:
         uid = attachment.source_uid
         if self._conn is None or uid is None or uid in self._moved:
             return
+        imap.clear_flagged(self._conn, uid)  # a prior run may have flagged it
         imap.move(self._conn, uid, self._settings.processed_folder)
         self._moved.add(uid)
+
+    def flag_unprocessed(self, attachment: Attachment) -> None:
+        """Star an email whose invoice couldn't be matched, so it can be investigated."""
+        uid = attachment.source_uid
+        if self._conn is None or uid is None or uid in self._moved:
+            return
+        imap.set_flagged(self._conn, uid)
 
     def close(self) -> None:
         if self._conn is not None:
@@ -110,6 +120,9 @@ class FolderAttachmentSource:
         return out
 
     def mark_processed(self, attachment: Attachment) -> None:
+        return None
+
+    def flag_unprocessed(self, attachment: Attachment) -> None:
         return None
 
     def close(self) -> None:
