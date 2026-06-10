@@ -16,7 +16,7 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -50,7 +50,7 @@ def _load_attachment(path: Path) -> Attachment:
         data=data,
         sha256=hashlib.sha256(data).hexdigest(),
         source_message_id="local-validation",
-        received_at=datetime.now(timezone.utc),
+        received_at=datetime.now(UTC),
     )
 
 

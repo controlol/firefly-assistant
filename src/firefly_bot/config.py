@@ -49,8 +49,8 @@ class MatchingSettings(BaseSettings):
 class Settings(BaseSettings):
     """Top-level settings aggregating the sub-configs."""
 
-    imap: ImapSettings = Field(default_factory=ImapSettings)  # type: ignore[arg-type]
-    firefly: FireflySettings = Field(default_factory=FireflySettings)  # type: ignore[arg-type]
+    imap: ImapSettings = Field(default_factory=ImapSettings)
+    firefly: FireflySettings = Field(default_factory=FireflySettings)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
 
     report_dir: str = "./reports"

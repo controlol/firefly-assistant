@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -77,7 +77,7 @@ class FireflyTransaction(BaseModel):
     web_url: str = Field(description="Deep link into the Firefly UI for review.")
 
 
-class MatchOutcome(str, Enum):
+class MatchOutcome(StrEnum):
     AUTO_ATTACHED = "auto_attached"
     ATTACHED_NEEDS_REVIEW = "attached_needs_review"
     NO_MATCH = "no_match"

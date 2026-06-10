@@ -7,14 +7,13 @@ exercised without any real Firefly, inbox, or PaddleOCR.
 from __future__ import annotations
 
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from firefly_bot.config import FireflySettings, ImapSettings, MatchingSettings, Settings
 from firefly_bot.firefly.ledger import DryRunLedger
 from firefly_bot.models import Attachment, FireflyTransaction, MatchResult
 from firefly_bot.pipeline import run
-
 
 # --- fakes -------------------------------------------------------------------
 
@@ -81,7 +80,7 @@ def _attachment() -> Attachment:
         data=b"%PDF-fake",
         sha256="hash-1",
         source_message_id="<1@x>",
-        received_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        received_at=datetime(2026, 6, 1, tzinfo=UTC),
     )
 
 

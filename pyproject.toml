@@ -3,7 +3,7 @@ name = "firefly-bot"
 version = "0.1.0"
 description = "Ingest invoices/receipts from email, OCR them, and match + attach to Firefly III transactions."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
@@ -39,19 +39,19 @@ build-backend = "hatchling.build"
 packages = ["src/firefly_bot"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_unreachable = true
 disallow_any_unimported = true
 plugins = ["pydantic.mypy"]
 # Third-party libs without type stubs:
 [[tool.mypy.overrides]]
-module = ["rapidocr_onnxruntime.*", "paddleocr.*", "pypdfium2.*", "PIL.*"]
+module = ["rapidocr_onnxruntime.*", "paddleocr.*", "pypdfium2.*", "PIL.*", "openpyxl.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ANN"]

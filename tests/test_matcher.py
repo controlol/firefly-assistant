@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from firefly_bot.config import MatchingSettings
@@ -23,7 +23,7 @@ def _attachment() -> Attachment:
         data=b"x",
         sha256="deadbeef",
         source_message_id="<1@x>",
-        received_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        received_at=datetime(2026, 6, 1, tzinfo=UTC),
     )
 
 

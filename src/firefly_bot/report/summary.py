@@ -7,7 +7,7 @@ UI so you can review/edit auto-written entries in one click.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol
 
 from openpyxl import Workbook
@@ -41,7 +41,7 @@ _HEADERS = (
 def write_xlsx(results: list[MatchResult], report_dir: str) -> str:
     """Write the report and return the file path."""
     os.makedirs(report_dir, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     path = os.path.join(report_dir, f"firefly-bot-{stamp}.xlsx")
 
     wb = Workbook()

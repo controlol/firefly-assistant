@@ -7,9 +7,10 @@ Uses only the stdlib (`imaplib`, `email`) to keep dependencies light. Returns ty
 from __future__ import annotations
 
 import email
+import email.utils
 import hashlib
 import imaplib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import Message
 
 from firefly_bot.config import ImapSettings
@@ -74,4 +75,4 @@ def _parse_date(raw: str | None) -> datetime:
         parsed = email.utils.parsedate_to_datetime(raw)
         if parsed is not None:
             return parsed
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
