@@ -55,6 +55,21 @@ class MatchingSettings(BaseSettings):
     processed_tag: str = "firefly-bot"
 
 
+class BankSettings(BaseSettings):
+    """Statement-import settings (CAMT.053)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="BANK_", env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
+
+    # Account holder name; counterparties with this name are treated as your own accounts
+    # (savings) and imported as transfers instead of income/expense.
+    owner_name: str | None = None
+    # Extra own-account IBANs (e.g. savings) if name detection is not enough.
+    own_ibans: tuple[str, ...] = ()
+    account_name: str = "Betaalrekening"
+
+
 class Settings(BaseSettings):
     """Top-level settings aggregating the sub-configs."""
 
@@ -63,6 +78,7 @@ class Settings(BaseSettings):
     imap: ImapSettings = Field(default_factory=ImapSettings)
     firefly: FireflySettings = Field(default_factory=FireflySettings)
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
+    bank: BankSettings = Field(default_factory=BankSettings)
 
     report_dir: str = "./reports"
     # Rasterisation DPI for PDFs before OCR. 200 is a good accuracy/speed balance for invoices.

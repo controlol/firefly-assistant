@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from firefly_bot.config import FireflySettings
-from firefly_bot.models import Attachment, FireflyTransaction
+from firefly_bot.models import Attachment, FireflyAccount, FireflyTransaction
 
 
 class FireflyClient:
@@ -112,3 +112,73 @@ class FireflyClient:
             },
         )
         resp.raise_for_status()
+
+    # --- statement import (see banking.importer.StatementWriter) ---------------------------
+
+    def list_accounts(self, account_type: str) -> list[FireflyAccount]:
+        out: list[FireflyAccount] = []
+        page = 1
+        while True:
+            resp = self._client.get(
+                "/api/v1/accounts", params={"type": account_type, "page": page}
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            for item in body["data"]:
+                attrs = item["attributes"]
+                out.append(
+                    FireflyAccount(
+                        id=str(item["id"]),
+                        name=attrs["name"],
+                        account_type=attrs.get("type", account_type),
+                        iban=attrs.get("iban"),
+                        currency_code=attrs.get("currency_code") or "EUR",
+                        account_role=attrs.get("account_role"),
+                    )
+                )
+            pagination = body.get("meta", {}).get("pagination", {})
+            if page >= int(pagination.get("total_pages", page) or 1):
+                break
+            page += 1
+        return out
+
+    def ensure_asset_account(self, iban: str, currency: str, role: str, name: str) -> str:
+        for account in self.list_accounts("asset"):
+            if account.iban == iban:
+                return account.id
+        return self._create_account(
+            {
+                "name": name,
+                "type": "asset",
+                "account_role": role,
+                "iban": iban,
+                "currency_code": currency,
+            }
+        )
+
+    def create_opposing_account(self, name: str, iban: str | None, role: str) -> str:
+        body: dict[str, object] = {"name": name, "type": role}
+        if iban:
+            body["iban"] = iban
+        return self._create_account(body)
+
+    def _create_account(self, body: dict[str, object]) -> str:
+        resp = self._client.post("/api/v1/accounts", json=body)
+        resp.raise_for_status()
+        return str(resp.json()["data"]["id"])
+
+    def create_transaction(self, split: dict[str, object], *, skip_duplicates: bool) -> bool:
+        """Create a transaction. Returns False if Firefly rejected it as a duplicate."""
+        resp = self._client.post(
+            "/api/v1/transactions",
+            json={
+                "apply_rules": False,
+                "fire_webhooks": False,
+                "error_if_duplicate_hash": skip_duplicates,
+                "transactions": [split],
+            },
+        )
+        if resp.status_code == 422 and "uplicate" in resp.text:
+            return False
+        resp.raise_for_status()
+        return True

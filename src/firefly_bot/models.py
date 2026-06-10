@@ -81,6 +81,19 @@ class FireflyTransaction(BaseModel):
     web_url: str = Field(description="Deep link into the Firefly UI for review.")
 
 
+class FireflyAccount(BaseModel):
+    """A Firefly account (the fields the importer/resolver use)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    name: str
+    account_type: str
+    iban: str | None = None
+    currency_code: str = "EUR"
+    account_role: str | None = None
+
+
 class MatchOutcome(StrEnum):
     AUTO_ATTACHED = "auto_attached"
     ATTACHED_NEEDS_REVIEW = "attached_needs_review"

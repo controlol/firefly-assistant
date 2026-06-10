@@ -4,9 +4,8 @@ Ingest invoices/receipts from an email inbox, OCR the key fields locally, match 
 to an existing [Firefly III](https://www.firefly-iii.org/) bank transaction, attach the
 document, tag it, and emit an audit report with deep links back into Firefly.
 
-It does **not** import bank statements — use the official
-[Data Importer](https://github.com/firefly-iii/data-importer) (CAMT.053 for Dutch banks, or the
-GoCardless feed) for that. firefly-bot only enriches transactions already in Firefly.
+It can also import CAMT.053 bank statements directly (`firefly-bot import`), or you can use the
+official [Data Importer](https://github.com/firefly-iii/data-importer) instead.
 
 See [PLAN.md](./PLAN.md) for scope, the build-vs-buy rationale, and the roadmap.
 
@@ -32,6 +31,18 @@ uv run firefly-bot run -v             # live: attach documents + tag transaction
 
 `--dry-run` reads your real transactions and produces the audit report, but suppresses every
 write to Firefly (via `DryRunLedger`). Use it to validate matching before going live.
+
+### Import a bank statement (CAMT.053)
+
+```bash
+uv run firefly-bot import --camt statement.xml --dry-run   # parse + plan, write nothing
+uv run firefly-bot import --camt statement.xml             # create transactions in Firefly
+```
+
+Set `BANK_OWNER_NAME` in `.env` so movements to your own accounts (savings) import as
+**transfers**, not income/expense. Re-imports are safe — Firefly's duplicate-hash detection
+skips transactions that already exist. Opposing accounts are de-duplicated (IBAN, then fuzzy
+name) to avoid "Albert Heijn 2264/2277" proliferation.
 
 To test against local documents instead of an inbox (no IMAP needed):
 
