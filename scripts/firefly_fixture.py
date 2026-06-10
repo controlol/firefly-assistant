@@ -9,6 +9,9 @@ reset them again.
 `bot-fixture`. `reset` deletes every `bot-fixture` transaction and the fixture asset account,
 restoring a clean state. Intended only for a disposable TEST Firefly instance.
 
+Workflow: run `reset` then `seed` once at the START of a test session. The data is meant to
+persist between individual tests — do not reset between them.
+
 Reads FIREFLY_BASE_URL / FIREFLY_TOKEN from .env (never printed).
 """
 
