@@ -77,6 +77,7 @@ class FireflyTransaction(BaseModel):
     source_iban: str | None = None
     destination_iban: str | None = None
     category_name: str | None = None
+    tags: tuple[str, ...] = Field(default=(), description="Existing tags — preserved on write.")
     web_url: str = Field(description="Deep link into the Firefly UI for review.")
 
 

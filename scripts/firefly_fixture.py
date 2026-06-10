@@ -15,6 +15,7 @@ Reads FIREFLY_BASE_URL / FIREFLY_TOKEN from .env (never printed).
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -112,16 +113,22 @@ def _counterparty(tx: ET.Element | None) -> tuple[str | None, str | None, str | 
 
 # --- seed / reset --------------------------------------------------------------------------
 
-def _ensure_asset_account(client: httpx.Client, iban: str, currency: str) -> str:
+def _normalise_name(name: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def _ensure_account(
+    client: httpx.Client, iban: str, currency: str, role: str, name_prefix: str
+) -> str:
     resp = client.get("/api/v1/accounts", params={"type": "asset"})
     resp.raise_for_status()
     for account in resp.json()["data"]:
         if account["attributes"].get("iban") == iban:
             return str(account["id"])
     body = {
-        "name": f"CAMT test {iban[-6:]} {_ACCOUNT_MARKER}",
+        "name": f"{name_prefix} {iban[-6:]} {_ACCOUNT_MARKER}",
         "type": "asset",
-        "account_role": "defaultAsset",
+        "account_role": role,
         "iban": iban,
         "currency_code": currency,
     }
@@ -130,13 +137,47 @@ def _ensure_asset_account(client: httpx.Client, iban: str, currency: str) -> str
     return str(created.json()["data"]["id"])
 
 
-def seed(camt_path: Path) -> None:
+def _show_on_dashboard(client: httpx.Client, account_ids: list[str]) -> None:
+    """Add the accounts to the frontpageAccounts preference so they show on the dashboard."""
+    try:
+        current = client.get("/api/v1/preferences/frontpageAccounts")
+        existing = (
+            current.json()["data"]["attributes"]["data"] if current.status_code == 200 else []
+        )
+        merged = list(dict.fromkeys([str(x) for x in existing] + account_ids))
+        updated = client.put("/api/v1/preferences/frontpageAccounts", json={"data": merged})
+        updated.raise_for_status()
+        print(f"  Dashboard accounts: {merged}")
+    except (httpx.HTTPError, KeyError, TypeError) as exc:  # best effort
+        print(f"  (could not update dashboard preference: {exc})")
+
+
+def seed(camt_path: Path, owner_name: str | None = None) -> None:
     account_iban, currency, entries = parse_camt(camt_path)
-    print(f"Parsed {len(entries)} entries for account {account_iban} ({currency}).")
+    owner_key = _normalise_name(owner_name) if owner_name else None
+    # Own accounts (e.g. savings): counterparties whose name is the account owner -> transfers.
+    own_ibans = {
+        e.counterparty_iban
+        for e in entries
+        if owner_key
+        and e.counterparty_iban
+        and e.counterparty_iban != account_iban
+        and _normalise_name(e.counterparty_name) == owner_key
+    }
+    print(f"Parsed {len(entries)} entries for {account_iban} ({currency}).")
+    if own_ibans:
+        print(f"Detected own (savings) account(s): {', '.join(own_ibans)}")
+
     with _client(FireflySettings()) as client:
-        asset_id = _ensure_asset_account(client, account_iban, currency)
-        print(f"Asset account id: {asset_id}")
-        created = 0
+        asset_id = _ensure_account(client, account_iban, currency, "defaultAsset", "Betaalrekening")
+        savings_ids = {
+            iban: _ensure_account(client, iban, currency, "savingAsset", "Spaarrekening")
+            for iban in own_ibans
+        }
+        _show_on_dashboard(client, [asset_id, *savings_ids.values()])
+        print(f"Main account id: {asset_id}; savings: {savings_ids or 'none'}")
+
+        created = transfers = 0
         for entry in entries:
             split: dict[str, object] = {
                 "date": entry.date,
@@ -144,7 +185,13 @@ def seed(camt_path: Path) -> None:
                 "description": entry.description,
                 "tags": [_FIXTURE_TAG],
             }
-            if entry.is_withdrawal:
+            if entry.counterparty_iban in savings_ids:
+                own_id = savings_ids[entry.counterparty_iban]
+                split["type"] = "transfer"
+                src, dst = (asset_id, own_id) if entry.is_withdrawal else (own_id, asset_id)
+                split["source_id"], split["destination_id"] = src, dst
+                transfers += 1
+            elif entry.is_withdrawal:
                 split["type"] = "withdrawal"
                 split["source_id"] = asset_id
                 split["destination_name"] = entry.counterparty_name
@@ -164,24 +211,54 @@ def seed(camt_path: Path) -> None:
                 print(f"  ! skipped {entry.date} {entry.amount}: {resp.text[:160]}")
                 continue
             created += 1
-        print(f"Created {created}/{len(entries)} transactions (tagged {_FIXTURE_TAG}).")
+        print(
+            f"Created {created}/{len(entries)} transactions "
+            f"({transfers} transfers, tagged {_FIXTURE_TAG})."
+        )
+
+
+def _all_accounts(client: httpx.Client, account_type: str) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    page = 1
+    while True:
+        resp = client.get("/api/v1/accounts", params={"type": account_type, "page": page})
+        resp.raise_for_status()
+        body = resp.json()
+        out.extend(body["data"])
+        pagination = body.get("meta", {}).get("pagination", {})
+        total_pages = int(pagination.get("total_pages", page))
+        if total_pages == 0 or page >= total_pages:
+            break
+        page += 1
+    return out
 
 
 def reset() -> None:
+    """Delete everything the fixtures created. TEST INSTANCE ONLY.
+
+    Removes bot-fixture transactions, the [bot-fixture] asset accounts, and all expense/revenue
+    (opposing) accounts — which on a disposable test instance are all auto-created by seeding.
+    """
     with _client(FireflySettings()) as client:
         ids = _fixture_transaction_ids(client)
         for tid in ids:
             client.delete(f"/api/v1/transactions/{tid}").raise_for_status()
         print(f"Deleted {len(ids)} {_FIXTURE_TAG} transactions.")
 
-        accounts = client.get("/api/v1/accounts", params={"type": "asset"})
-        accounts.raise_for_status()
-        removed = 0
-        for account in accounts.json()["data"]:
-            if _ACCOUNT_MARKER in account["attributes"]["name"]:
+        removed_assets = 0
+        for account in _all_accounts(client, "asset"):
+            attrs = account["attributes"]  # type: ignore[index]
+            if _ACCOUNT_MARKER in attrs["name"]:
                 client.delete(f"/api/v1/accounts/{account['id']}").raise_for_status()
-                removed += 1
-        print(f"Deleted {removed} fixture asset account(s).")
+                removed_assets += 1
+
+        removed_opposing = 0
+        for account_type in ("expense", "revenue"):
+            for account in _all_accounts(client, account_type):
+                client.delete(f"/api/v1/accounts/{account['id']}").raise_for_status()
+                removed_opposing += 1
+
+        print(f"Deleted {removed_assets} fixture asset + {removed_opposing} opposing account(s).")
 
 
 def _fixture_transaction_ids(client: httpx.Client) -> list[str]:
@@ -207,11 +284,16 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     seed_cmd = sub.add_parser("seed", help="Import CAMT.053 transactions (tagged bot-fixture).")
     seed_cmd.add_argument("--camt", required=True, help="Path to the CAMT.053 .xml file.")
+    seed_cmd.add_argument(
+        "--owner-name",
+        default=None,
+        help="Account holder name; counterparties with this name become transfers (savings).",
+    )
     sub.add_parser("reset", help="Delete bot-fixture transactions and the fixture account.")
     args = parser.parse_args(argv)
 
     if args.command == "seed":
-        seed(Path(args.camt))
+        seed(Path(args.camt), owner_name=args.owner_name)
     elif args.command == "reset":
         reset()
     return 0

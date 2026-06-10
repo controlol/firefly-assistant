@@ -139,6 +139,20 @@ def test_pipeline_dry_run_suppresses_writes() -> None:
     assert inner.tagged == []
 
 
+def test_pipeline_preserves_existing_tags() -> None:
+    txn = _transaction().model_copy(update={"tags": ("bot-fixture", "vakantie")})
+    ledger = FakeLedger([txn])
+    run(
+        _settings(),
+        source=FakeSource([_attachment()]),
+        recogniser=FakeRecogniser(_MATCHING_TEXT),
+        ledger=ledger,
+        report_writer=CapturingReportWriter(),
+    )
+    # Existing tags kept; the tool's tag appended (no duplicates, no loss).
+    assert ledger.tagged == [("42", ["bot-fixture", "vakantie", "firefly-bot"])]
+
+
 def test_pipeline_no_match_writes_nothing() -> None:
     ledger = FakeLedger([_transaction()])
     report = CapturingReportWriter()

@@ -83,10 +83,11 @@ def _process(
         return result
     try:
         ledger.attach_document(result.transaction, invoice.source)
-        tags = [settings.matching.processed_tag]
+        # Preserve the transaction's existing tags — append ours, don't replace.
+        tags = [*result.transaction.tags, settings.matching.processed_tag]
         if result.outcome is MatchOutcome.ATTACHED_NEEDS_REVIEW:
             tags.append(settings.matching.needs_review_tag)
-        ledger.add_tags(result.transaction, tags)
+        ledger.add_tags(result.transaction, list(dict.fromkeys(tags)))
     except Exception as exc:  # noqa: BLE001 - report, never crash the whole run
         log.exception("Failed to act on %s", invoice.source.filename)
         return result.model_copy(

@@ -72,6 +72,7 @@ class FireflyClient:
                     source_iban=split.get("source_iban"),
                     destination_iban=split.get("destination_iban"),
                     category_name=split.get("category_name"),
+                    tags=tuple(split.get("tags") or ()),
                     web_url=f"{self._base_url}/transactions/show/{group_id}",
                 )
             )
