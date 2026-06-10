@@ -1,0 +1,60 @@
+[project]
+name = "firefly-bot"
+version = "0.1.0"
+description = "Ingest invoices/receipts from email, OCR them, and match + attach to Firefly III transactions."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "rapidocr-onnxruntime>=1.4",
+    "pypdfium2>=4.30",
+    "pillow>=10.0",
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "pytest>=8.0",
+]
+# Alternative OCR engine. Note: paddle 3.x currently fails the PP-OCRv3 graphs on CPU/Windows;
+# RapidOCR is the supported default. Only install this if you specifically need PaddleOCR.
+paddle = [
+    "paddlepaddle>=2.6",
+    "paddleocr>=2.7,<3",
+]
+
+[project.scripts]
+firefly-bot = "firefly_bot.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/firefly_bot"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+plugins = ["pydantic.mypy"]
+# Third-party libs without type stubs:
+[[tool.mypy.overrides]]
+module = ["rapidocr_onnxruntime.*", "paddleocr.*", "pypdfium2.*", "PIL.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ANN"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

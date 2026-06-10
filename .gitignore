@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+reports/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
+# Real invoices/receipts contain personal & financial data — never commit them.
+samples/invoices/*
+!samples/invoices/.gitkeep
+samples/expected.json
+
