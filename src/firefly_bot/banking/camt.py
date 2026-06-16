@@ -65,9 +65,12 @@ def parse_camt053(source: Path | bytes | str) -> BankStatement:
         amount = Decimal(ntry.findtext("c:Amt", default="0", namespaces=ns))
         if amount == 0:
             continue
+        # CdtDbtInd already reflects the entry's actual effect on the account, reversals included:
+        # a reversed debit (e.g. a refund) books as CRDT. RvslInd only *flags* that the entry undoes
+        # a prior one — it must NOT flip the sign, or a refund is imported as a payment (a 2x swing
+        # that breaks reconciliation; seen on a real RegioBank export, 172.42 vs 101.88).
         indicator = (ntry.findtext("c:CdtDbtInd", namespaces=ns) or "DBIT").upper()
-        reversed_ = (ntry.findtext("c:RvslInd", namespaces=ns) or "false").lower() == "true"
-        is_outgoing = (indicator == "DBIT") != reversed_  # a reversal flips the direction
+        is_outgoing = indicator == "DBIT"
         date = (
             ntry.findtext("c:BookgDt/c:Dt", namespaces=ns)
             or ntry.findtext("c:ValDt/c:Dt", namespaces=ns)
