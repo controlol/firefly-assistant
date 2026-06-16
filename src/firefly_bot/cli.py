@@ -14,7 +14,7 @@ from firefly_bot.banking.importer import import_statement
 from firefly_bot.config import Settings, load_settings
 from firefly_bot.enrich.bootstrap import bootstrap_labels
 from firefly_bot.enrich.corrections import capture_corrections
-from firefly_bot.firefly.client import FireflyClient
+from firefly_bot.firefly.client import AssetAccountNotFoundError, FireflyClient
 from firefly_bot.ingest.source import AttachmentSource, FolderAttachmentSource
 from firefly_bot.labels import JsonlLabelStore, NullLabelStore, read_labels
 from firefly_bot.pipeline import run
@@ -50,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         "import", parents=[common], help="Import a CAMT.053 bank statement into Firefly."
     )
     import_p.add_argument("--camt", required=True, help="Path to the CAMT.053 .xml file.")
+    import_p.add_argument(
+        "--create-account",
+        action="store_true",
+        help="Create the asset account if no existing Firefly account matches the statement IBAN. "
+        "Without this flag the import exits instead of creating a (possibly duplicate) account.",
+    )
 
     bootstrap_p = sub.add_parser(
         "bootstrap",
@@ -84,7 +90,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "import":
-        return _import(Path(args.camt), dry_run=args.dry_run, profile=args.profile)
+        return _import(
+            Path(args.camt),
+            dry_run=args.dry_run,
+            profile=args.profile,
+            create_account=args.create_account,
+        )
     if args.command == "bootstrap":
         return _bootstrap(args)
     if args.command == "reconcile-labels":
@@ -104,7 +115,9 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _import(camt_path: Path, *, dry_run: bool, profile: str | None = None) -> int:
+def _import(
+    camt_path: Path, *, dry_run: bool, profile: str | None = None, create_account: bool = False
+) -> int:
     statement = parse_camt053(camt_path)
     settings = load_settings(profile)
     bank = settings.bank
@@ -118,21 +131,27 @@ def _import(camt_path: Path, *, dry_run: bool, profile: str | None = None) -> in
     label_store = NullLabelStore() if dry_run else JsonlLabelStore(settings.labels_path)
     categoriser = _build_categoriser(settings)
     merchant_embedder = _build_merchant_embedder(settings)
-    with FireflyClient(settings.firefly) as client:
-        summary = import_statement(
-            statement,
-            client,
-            owner_name=bank.owner_name,
-            own_ibans=frozenset(bank.own_ibans),
-            account_name=bank.account_name,
-            dry_run=dry_run,
-            label_store=label_store,
-            categoriser=categoriser,
-            needs_review_tag=settings.matching.needs_review_tag,
-            merchant_embedder=merchant_embedder,
-            merchant_gate=settings.enrich.merchant_gate,
-        )
-    label_store.close()
+    try:
+        with FireflyClient(settings.firefly) as client:
+            summary = import_statement(
+                statement,
+                client,
+                owner_name=bank.owner_name,
+                own_ibans=frozenset(bank.own_ibans),
+                account_name=bank.account_name,
+                dry_run=dry_run,
+                label_store=label_store,
+                categoriser=categoriser,
+                needs_review_tag=settings.matching.needs_review_tag,
+                merchant_embedder=merchant_embedder,
+                merchant_gate=settings.enrich.merchant_gate,
+                create_account=create_account,
+            )
+    except AssetAccountNotFoundError as exc:
+        log.error("%s", exc)
+        return 2
+    finally:
+        label_store.close()
     prefix = "(dry-run) " if dry_run else ""
     print(
         f"{prefix}Import: parsed {summary.total}, created {summary.created}, "

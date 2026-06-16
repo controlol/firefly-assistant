@@ -37,6 +37,7 @@ class StatementWriter(Protocol):
         *,
         opening_balance: Decimal | None = None,
         opening_date: str | None = None,
+        create: bool = True,
     ) -> str: ...
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str: ...
     def create_transaction(
@@ -161,20 +162,25 @@ def import_statement(
     needs_review_tag: str = "needs-review",
     merchant_embedder: Embedder | None = None,
     merchant_gate: float = 0.93,
+    create_account: bool = True,
 ) -> ImportSummary:
     # Default to a no-op store on dry-run (mirrors the ledger), otherwise accumulate signal.
     store: LabelStore = label_store or NullLabelStore()
     own = _own_accounts(statement, owner_name, own_ibans)
 
+    # create_account=False makes a missing asset account a hard error (AssetAccountNotFoundError)
+    # instead of silently creating a duplicate; the IBAN must already exist on a Firefly account.
     asset_id = "" if dry_run else writer.ensure_asset_account(
         statement.account_iban, statement.currency, "defaultAsset",
         f"{account_name} {statement.account_iban[-6:]}",
         opening_balance=statement.opening_balance,
         opening_date=statement.opening_date or _earliest_date(statement),
+        create=create_account,
     )
     savings = {} if dry_run else {
         iban: writer.ensure_asset_account(
-            iban, statement.currency, "savingAsset", f"Spaarrekening {iban[-6:]}"
+            iban, statement.currency, "savingAsset", f"Spaarrekening {iban[-6:]}",
+            create=create_account,
         )
         for iban in sorted(own)
     }

@@ -18,6 +18,22 @@ from firefly_bot.models import Attachment, FireflyAccount, FireflyTransaction
 log = logging.getLogger("firefly_bot.firefly")
 
 
+class AssetAccountNotFoundError(Exception):
+    """No asset account matches the statement IBAN and account creation was not permitted.
+
+    Raised by ``ensure_asset_account(create=False)`` so the import can exit cleanly instead of
+    silently creating a duplicate account (see the import ``--create-account`` flag).
+    """
+
+    def __init__(self, iban: str, name: str) -> None:
+        self.iban = iban
+        self.name = name
+        super().__init__(
+            f"No asset account in Firefly has IBAN {iban}. Set the IBAN on your existing account, "
+            f"or pass --create-account to create {name!r}."
+        )
+
+
 class FireflyClient:
     def __init__(self, settings: FireflySettings) -> None:
         self._base_url = settings.base_url.rstrip("/")
@@ -157,10 +173,13 @@ class FireflyClient:
         *,
         opening_balance: Decimal | None = None,
         opening_date: str | None = None,
+        create: bool = True,
     ) -> str:
         for account in self.list_accounts("asset"):
             if account.iban == iban:
                 return account.id
+        if not create:
+            raise AssetAccountNotFoundError(iban, name)
         # No asset account carries this IBAN — usually because an existing account simply has no
         # IBAN set. Warn so the user notices instead of silently getting a duplicate account.
         log.warning(

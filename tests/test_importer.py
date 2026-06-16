@@ -6,8 +6,11 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from firefly_bot.banking.camt import BankStatement, BankTransaction
 from firefly_bot.banking.importer import import_statement
+from firefly_bot.firefly.client import AssetAccountNotFoundError
 from firefly_bot.labels import JsonlLabelStore
 from firefly_bot.models import CategorySuggestion, FireflyAccount, LabelRecord
 
@@ -29,10 +32,15 @@ class FakeLabelStore:
 
 
 class FakeWriter:
-    def __init__(self, duplicate_dates: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        duplicate_dates: tuple[str, ...] = (),
+        existing_asset_ibans: tuple[str, ...] = (),
+    ) -> None:
         self.created_opposing: list[tuple[str, str | None, str]] = []
         self.created_txns: list[dict[str, object]] = []
         self.duplicate_dates = set(duplicate_dates)
+        self.existing_asset_ibans = set(existing_asset_ibans)
         self._next = 1000
 
     def list_accounts(self, account_type: str) -> list[FireflyAccount]:
@@ -47,7 +55,10 @@ class FakeWriter:
         *,
         opening_balance: Decimal | None = None,
         opening_date: str | None = None,
+        create: bool = True,
     ) -> str:
+        if not create and iban not in self.existing_asset_ibans:
+            raise AssetAccountNotFoundError(iban, name)
         return f"asset-{iban[-4:]}"
 
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str:
@@ -94,6 +105,21 @@ def test_dedups_albert_heijn_into_one_expense_account() -> None:
     # Two AH variants -> a single expense account created and reused.
     expense = [c for c in writer.created_opposing if c[2] == "expense"]
     assert len(expense) == 1
+    assert summary.created == 3
+
+
+def test_missing_asset_account_without_create_flag_raises() -> None:
+    # No asset account carries the statement IBAN and create_account=False -> hard error instead of
+    # silently creating a duplicate. (The CLI maps this to a clean exit; see --create-account.)
+    writer = FakeWriter()  # no existing asset IBANs
+    with pytest.raises(AssetAccountNotFoundError):
+        import_statement(_statement(), writer, owner_name="J. Jansen", create_account=False)
+
+
+def test_existing_asset_accounts_import_without_create_flag() -> None:
+    # When the asset (and own-savings) IBANs already exist, create_account=False imports normally.
+    writer = FakeWriter(existing_asset_ibans=("NL00BANK0123456789", "NL00BANK9876543210"))
+    summary = import_statement(_statement(), writer, owner_name="J. Jansen", create_account=False)
     assert summary.created == 3
 
 
