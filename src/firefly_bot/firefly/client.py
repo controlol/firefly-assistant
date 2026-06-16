@@ -5,6 +5,7 @@ Docs: https://api-docs.firefly-iii.org/ — uses a Personal Access Token (Bearer
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -13,6 +14,8 @@ import httpx
 
 from firefly_bot.config import FireflySettings
 from firefly_bot.models import Attachment, FireflyAccount, FireflyTransaction
+
+log = logging.getLogger("firefly_bot.firefly")
 
 
 class FireflyClient:
@@ -158,6 +161,15 @@ class FireflyClient:
         for account in self.list_accounts("asset"):
             if account.iban == iban:
                 return account.id
+        # No asset account carries this IBAN — usually because an existing account simply has no
+        # IBAN set. Warn so the user notices instead of silently getting a duplicate account.
+        log.warning(
+            "No existing asset account matches IBAN %s — creating %r. If you meant to use an "
+            "existing account, set its IBAN to %s first, then delete this one and re-import.",
+            iban,
+            name,
+            iban,
+        )
         body: dict[str, object] = {
             "name": name,
             "type": "asset",
