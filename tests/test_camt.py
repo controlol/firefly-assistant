@@ -126,3 +126,37 @@ def test_non_reconciling_statement_warns_but_still_imports(
 
 def test_reconciles_is_none_when_a_balance_is_absent() -> None:
     assert reconciles(parse_camt053(_SAMPLE)) is None  # sample has no OPBD/CLBD
+
+
+_REVERSAL_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
+ <BkToCstmrStmt><Stmt>
+  <Acct><Id><IBAN>NL00BANK0123456789</IBAN></Id><Ccy>EUR</Ccy></Acct>
+  <Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp>
+   <Amt Ccy="EUR">100.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-04-21</Dt></Dt></Bal>
+  <Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+   <Amt Ccy="EUR">125.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-04-24</Dt></Dt></Bal>
+  <Ntry>
+   <Amt Ccy="EUR">25.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><RvslInd>true</RvslInd>
+   <BookgDt><Dt>2026-04-22</Dt></BookgDt>
+   <NtryDtls><TxDtls><RltdPties><Dbtr><Nm>Refund Merchant</Nm></Dbtr></RltdPties>
+   </TxDtls></NtryDtls>
+  </Ntry>
+ </Stmt></BkToCstmrStmt>
+</Document>
+"""
+
+
+def test_reversal_trusts_cdtdbtind_and_reconciles(caplog: pytest.LogCaptureFixture) -> None:
+    """A reversal (RvslInd=true) must trust CdtDbtInd, not flip it.
+
+    Regression: flipping the sign turned a EUR 25 CRDT refund into a EUR 25 payment — a 2x swing
+    that broke reconciliation on a real RegioBank export (opening 172.42 vs closing 101.88).
+    """
+    with caplog.at_level(logging.WARNING, logger="firefly_bot.camt"):
+        stmt = parse_camt053(_REVERSAL_SAMPLE)
+    tx = stmt.transactions[0]
+    assert tx.amount == Decimal("25.00")
+    assert tx.is_outgoing is False  # CRDT reversal = refund = incoming
+    assert reconciles(stmt) is True
+    assert not [r for r in caplog.records if "reconcile" in r.getMessage()]

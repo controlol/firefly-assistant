@@ -102,7 +102,7 @@ def test_owner_named_counterparty_becomes_transfer() -> None:
     summary = import_statement(_statement(), writer, owner_name="J. Jansen")
     assert summary.transfers == 1
     transfer = next(t for t in writer.created_txns if t["type"] == "transfer")
-    assert transfer["destination_id"] == "asset-9613"  # money in -> our main account
+    assert transfer["destination_id"] == "asset-6789"  # money in -> our main account
 
 
 def test_duplicates_are_counted_not_created() -> None:
