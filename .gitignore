@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 .env
+# Profile env files (FIREFLY_BOT_ENV=prod -> .env.prod). May contain secrets — never commit.
+.env.*
+!.env.example
 reports/
 .claude/
 # Phase 1 label capture — local training data, may contain financial details. Never commit.
@@ -21,6 +24,7 @@ samples/expected.json
 # Bank statement exports (CAMT.053 / MT940) — contain ALL transactions. Never commit.
 samples/*.xml
 samples/statements/
+imports/
 *.camt053
 *.mt940
 *.940

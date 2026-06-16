@@ -31,6 +31,13 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument(
         "--dry-run", action="store_true", help="Plan and report, but write nothing to Firefly."
     )
+    common.add_argument(
+        "--profile",
+        default=None,
+        metavar="NAME",
+        help="Overlay .env.<NAME> on the base .env (e.g. --profile prod). "
+        "Defaults to the FIREFLY_BOT_ENV env var.",
+    )
 
     parser = argparse.ArgumentParser(prog="firefly-bot")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -77,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "import":
-        return _import(Path(args.camt), dry_run=args.dry_run)
+        return _import(Path(args.camt), dry_run=args.dry_run, profile=args.profile)
     if args.command == "bootstrap":
         return _bootstrap(args)
     if args.command == "reconcile-labels":
@@ -86,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    settings = load_settings()
+    settings = load_settings(args.profile)
     if args.dry_run:
         log.info("DRY RUN — no writes to Firefly.")
     source: AttachmentSource | None = (
@@ -97,9 +104,9 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _import(camt_path: Path, *, dry_run: bool) -> int:
+def _import(camt_path: Path, *, dry_run: bool, profile: str | None = None) -> int:
     statement = parse_camt053(camt_path)
-    settings = load_settings()
+    settings = load_settings(profile)
     bank = settings.bank
     log.info(
         "Parsed %d entries for %s (%s)",
@@ -184,7 +191,7 @@ def _build_merchant_embedder(settings: Settings) -> Embedder | None:
 
 def _bootstrap(args: argparse.Namespace) -> int:
     """Read-only pass over existing Firefly history → seed labels.jsonl for the Phase 2 enricher."""
-    settings = load_settings()
+    settings = load_settings(args.profile)
     if args.since:
         start = date.fromisoformat(args.since)
     else:
@@ -222,7 +229,7 @@ def _reconcile(args: argparse.Namespace) -> int:
     re-reads their live state from Firefly, and appends a ``corrected`` record wherever the user
     changed what we predicted. The only thing written is the local label file.
     """
-    settings = load_settings()
+    settings = load_settings(args.profile)
     if args.since:
         start = date.fromisoformat(args.since)
     else:

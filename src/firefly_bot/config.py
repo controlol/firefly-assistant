@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Shared: read from process env and a local .env, ignore unrelated keys.
-_ENV_FILE = ".env"
+#
+# Profile selection: a profile layers a profile-specific file on top of the base .env, e.g. the
+# "prod" profile loads (".env", ".env.prod"). Later files override earlier ones; missing files are
+# ignored. The profile comes from either the --profile CLI flag or the FIREFLY_BOT_ENV env var
+# (flag wins). Resolved at load_settings() time, NOT at import, so the CLI flag is honoured.
+
+
+def _resolve_env_file(profile: str | None = None) -> str | tuple[str, ...]:
+    profile = profile or os.getenv("FIREFLY_BOT_ENV")
+    return (".env", f".env.{profile}") if profile else ".env"
+
+
+# Default used when a settings class is constructed directly (no profile). load_settings() passes
+# an explicit _env_file so the CLI flag / env var is applied at runtime.
+_ENV_FILE: str | tuple[str, ...] = _resolve_env_file()
 
 
 class ImapSettings(BaseSettings):
@@ -136,5 +151,19 @@ class Settings(BaseSettings):
         return f"{self.data_dir}/labels.jsonl"
 
 
-def load_settings() -> Settings:
-    return Settings()
+def load_settings(profile: str | None = None) -> Settings:
+    """Load settings, optionally overlaying a profile file (.env.<profile>) on the base .env.
+
+    The profile is resolved here (not at import) so the --profile CLI flag is honoured; it falls
+    back to the FIREFLY_BOT_ENV env var. The chosen env file is passed to every sub-config because
+    pydantic-settings does not propagate _env_file into nested BaseSettings models.
+    """
+    env_file = _resolve_env_file(profile)
+    return Settings(
+        _env_file=env_file,
+        imap=ImapSettings(_env_file=env_file),
+        firefly=FireflySettings(_env_file=env_file),
+        matching=MatchingSettings(_env_file=env_file),
+        bank=BankSettings(_env_file=env_file),
+        enrich=EnrichSettings(_env_file=env_file),
+    )
