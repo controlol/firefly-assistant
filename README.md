@@ -121,7 +121,9 @@ existing Firefly asset accounts. By default, if no account matches it **stops wi
 than create one — this avoids a silent duplicate when an existing account simply has no IBAN set (a
 common cause). Either set the IBAN on your existing account and re-run, or pass `--create-account` to
 let the import create it (named `<BANK_ACCOUNT_NAME> <last 6 of IBAN>`). On a brand-new Firefly with
-no account yet, use `--create-account` for the first import.
+no account yet, use `--create-account` for the first import. A created asset account is also added
+to the home-screen balance chart (the `frontpageAccounts` preference) so it shows immediately —
+unless you've never customised that preference, in which case Firefly already shows all accounts.
 
 Set `BANK_OWNER_NAME` in `.env` so movements to your own accounts (savings) import as **transfers**,
 not income/expense. Re-imports are safe — Firefly's duplicate-hash detection skips transactions that

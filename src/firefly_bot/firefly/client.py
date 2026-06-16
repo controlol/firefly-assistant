@@ -199,7 +199,9 @@ class FireflyClient:
         if opening_balance is not None and opening_date:
             body["opening_balance"] = str(opening_balance)
             body["opening_balance_date"] = opening_date
-        return self._create_account(body)
+        account_id = self._create_account(body)
+        self._show_on_dashboard(account_id)
+        return account_id
 
     def create_opposing_account(self, name: str, iban: str | None, role: str) -> str:
         body: dict[str, object] = {"name": name, "type": role}
@@ -211,6 +213,51 @@ class FireflyClient:
         resp = self._client.post("/api/v1/accounts", json=body)
         resp.raise_for_status()
         return str(resp.json()["data"]["id"])
+
+    def _show_on_dashboard(self, account_id: str) -> None:
+        """Add a newly-created asset account to the home-screen balance chart (best-effort).
+
+        Firefly's dashboard chart only plots accounts listed in the ``frontpageAccounts``
+        preference, and new accounts are not added automatically. We *append* to the existing list
+        (never overwrite) and — crucially — only when it is already non-empty: an empty/unset
+        preference means Firefly shows ALL asset accounts, so writing to it would hide the others.
+        Any failure here is logged and swallowed; it must never break an import.
+        """
+        try:
+            new_id = int(account_id)
+        except ValueError:
+            return
+        try:
+            current = self._frontpage_accounts()
+            if not current or new_id in current:
+                return  # empty => Firefly already shows all assets; present => nothing to do
+            resp = self._client.put(
+                "/api/v1/preferences/frontpageAccounts", json={"data": [*current, new_id]}
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.warning(
+                "Created account %s but could not add it to the dashboard (frontpageAccounts): %s",
+                account_id,
+                exc,
+            )
+
+    def _frontpage_accounts(self) -> list[int]:
+        """Current ``frontpageAccounts`` account ids, or [] if unset/absent."""
+        resp = self._client.get("/api/v1/preferences/frontpageAccounts")
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json().get("data", {}).get("attributes", {}).get("data")
+        if not isinstance(data, list):
+            return []
+        ids: list[int] = []
+        for item in data:
+            try:
+                ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return ids
 
     def create_transaction(
         self, split: dict[str, object], *, skip_duplicates: bool
