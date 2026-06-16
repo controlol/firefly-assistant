@@ -17,7 +17,7 @@ _UBL = """<?xml version="1.0" encoding="UTF-8"?>
   <cbc:IssueDate>2026-04-28</cbc:IssueDate>
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
   <cac:AccountingSupplierParty><cac:Party>
-    <cac:PartyName><cbc:Name>Wifimedia B.V.</cbc:Name></cac:PartyName>
+    <cac:PartyName><cbc:Name>Example Vendor B.V.</cbc:Name></cac:PartyName>
   </cac:Party></cac:AccountingSupplierParty>
   <cac:PaymentMeans>
     <cac:PayeeFinancialAccount><cbc:ID>NL00 BANK 2233445566</cbc:ID></cac:PayeeFinancialAccount>
@@ -47,7 +47,7 @@ def test_parses_ubl_invoice_fields() -> None:
     assert inv.invoice_number == "V2606740"
     assert inv.invoice_date == date(2026, 4, 28)
     assert inv.total_amount == Decimal("1772.00")
-    assert inv.counterparty_name == "Wifimedia B.V."
+    assert inv.counterparty_name == "Example Vendor B.V."
     assert inv.counterparty_iban == "NL00BANK2233445566"  # normalised
     assert inv.total_confidence is FieldConfidence.HIGH
     assert inv.number_confidence is FieldConfidence.HIGH
