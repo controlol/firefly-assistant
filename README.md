@@ -67,8 +67,9 @@ uv run firefly-bot run -v               # live: attach documents + tag transacti
 | `firefly-bot bootstrap` | **Read-only** pass over Firefly history → seed `labels.jsonl` (cold-start booster). |
 | `firefly-bot reconcile-labels` | Read your category corrections in Firefly → append `corrected` examples. |
 
-All accept `--dry-run` and `-v`. `bootstrap`/`reconcile-labels` take `--days N` (default 365) or
-`--since YYYY-MM-DD`.
+All accept `--dry-run`, `-v`, and `--profile NAME` (overlay `.env.NAME` on `.env`). `import` takes
+`--create-account` (create the asset account if the statement IBAN matches none). `bootstrap`/
+`reconcile-labels` take `--days N` (default 365) or `--since YYYY-MM-DD`.
 
 To test the document path against local files instead of an inbox (no IMAP needed):
 
@@ -110,9 +111,17 @@ uv run python experiments/discovery_demo.py     # discovering categories you nev
 ## Bank import (CAMT.053)
 
 ```bash
-uv run firefly-bot import --camt statement.xml --dry-run   # parse + plan, write nothing
-uv run firefly-bot import --camt statement.xml             # create transactions in Firefly
+uv run firefly-bot import --camt statement.xml --dry-run        # parse + plan, write nothing
+uv run firefly-bot import --camt statement.xml                  # import into the matching account
+uv run firefly-bot import --camt statement.xml --create-account # also create the asset account if missing
 ```
+
+The bot finds the asset account to import into by **matching the statement IBAN** against your
+existing Firefly asset accounts. By default, if no account matches it **stops with an error** rather
+than create one — this avoids a silent duplicate when an existing account simply has no IBAN set (a
+common cause). Either set the IBAN on your existing account and re-run, or pass `--create-account` to
+let the import create it (named `<BANK_ACCOUNT_NAME> <last 6 of IBAN>`). On a brand-new Firefly with
+no account yet, use `--create-account` for the first import.
 
 Set `BANK_OWNER_NAME` in `.env` so movements to your own accounts (savings) import as **transfers**,
 not income/expense. Re-imports are safe — Firefly's duplicate-hash detection skips transactions that
