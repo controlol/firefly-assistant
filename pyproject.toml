@@ -25,9 +25,11 @@ dev = [
 ]
 # Alternative OCR engine. Note: paddle 3.x currently fails the PP-OCRv3 graphs on CPU/Windows;
 # RapidOCR is the supported default. Only install this if you specifically need PaddleOCR.
+# paddlepaddle ships no wheels for Python >= 3.14 (max cp313), so the marker keeps uv's universal
+# lock satisfiable on our >=3.14 floor — the extra simply resolves to nothing there.
 paddle = [
-    "paddlepaddle>=2.6",
-    "paddleocr>=2.7,<3",
+    "paddlepaddle>=2.6; python_version < '3.14'",
+    "paddleocr>=2.7,<3; python_version < '3.14'",
 ]
 
 [project.scripts]
