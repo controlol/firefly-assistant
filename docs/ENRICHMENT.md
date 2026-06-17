@@ -124,6 +124,24 @@ All knobs live in `EnrichSettings`.
 threshold exists. Wrongly merging two merchants corrupts the ledger, so it's opt-in behind a 0.93
 gate (never fires on this data); the IBAN/normalise/rapidfuzz cascade remains the default.
 
+**2.5 collector / shared-IBAN handling — DONE.** Payment processors (Adyen, Mollie, MultiSafepay,
+Rabo/ING *Betaalverzoek*, …) settle **many merchants through one IBAN**, but Firefly enforces IBAN
+uniqueness (one IBAN = at most one expense account), and `AccountResolver` keys on IBAN first. So
+the first merchant seen on such an IBAN "claims" it and every later merchant is silently merged into
+it (the real bug: a `PaylogicHoldingBV` payment landing in the `Zara.com` account because both
+settle through `NL04ADYB2017400157`).
+
+The importer now **auto-detects** these collector IBANs — any IBAN that maps to >1 distinct
+`normalise_merchant` name, computed from the statement's own counterparties **plus the opposing
+accounts already in Firefly** (so an IBAN polluted by an earlier single-merchant import is still
+caught). No hardcoded processor list. For a transaction on a collector IBAN, resolution is left
+unchanged (it still resolves to the one shared account by IBAN — we can't split it without violating
+IBAN-uniqueness), but the real `Cdtr/Nm` is **prepended to the description** (`PaylogicHoldingBV —
+<ref>`) so the per-transaction merchant is never lost. Normal single-merchant IBANs are untouched.
+The prefix is deterministic and idempotent, so re-imports of the *same* statement still hash-dedup;
+it does **not** retroactively fix transactions imported before this change. See
+`banking/importer.py` `_collector_ibans` / `_with_merchant`.
+
 **Remaining (future): Phase 3 (learned match scorer) and Phase 4 (recurring + local LLM).** Their
 data prerequisites are now in place: match negatives (1a), category corrections + `firefly_id`
 (1b), canonical merchants + provenance.

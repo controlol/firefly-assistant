@@ -185,18 +185,32 @@ def import_statement(
         for iban in sorted(own)
     }
 
+    # Existing opposing accounts are fetched once and shared by the resolver and the collector-IBAN
+    # detector (avoids a second round-trip). Skipped on dry-run, which does no Firefly I/O.
+    existing_accounts: dict[str, list[FireflyAccount]] = (
+        {}
+        if dry_run
+        else {role: writer.list_accounts(role) for role in ("expense", "revenue")}
+    )
+    collector_ibans = _collector_ibans(statement, existing_accounts)
     opposing = _resolve_opposing_accounts(
-        statement, writer, set(savings), dry_run,
+        statement, writer, set(savings), dry_run, existing_accounts,
         merchant_embedder=merchant_embedder, merchant_gate=merchant_gate,
     )
 
     created = duplicates = errors = transfers = 0
     for index, tx in enumerate(statement.transactions):
         is_transfer = tx.counterparty_iban in savings
+        # A collector IBAN (Adyen/Mollie/payment-request services) resolves to ONE shared expense
+        # account, so the per-transaction merchant would be lost. Keep the shared account but record
+        # the real merchant in the description (see _with_merchant).
+        description = tx.description
+        if not is_transfer and tx.counterparty_iban in collector_ibans:
+            description = _with_merchant(tx.counterparty_name, tx.description)
         split: dict[str, object] = {
             "date": tx.date,
             "amount": str(tx.amount),
-            "description": tx.description,
+            "description": description,
             "tags": list(extra_tags),
         }
         if tx.reference:
@@ -278,11 +292,52 @@ def _own_accounts(
     return own
 
 
+def _collector_ibans(
+    statement: BankStatement, existing_accounts: dict[str, list[FireflyAccount]]
+) -> set[str]:
+    """IBANs that map to >1 distinct merchant name — payment-processor collector accounts.
+
+    Built from the statement's own counterparties plus the opposing accounts already in Firefly, so
+    an IBAN polluted by an earlier single-merchant import is still recognised. Such an IBAN is not a
+    single merchant's identity (Adyen/Mollie/Betaalverzoek settle many merchants through one IBAN);
+    rather than merge them into one account silently, the importer keeps the shared account but
+    records each real merchant in the transaction description.
+    """
+    names_by_iban: dict[str, set[str]] = {}
+
+    def add(iban: str | None, name: str) -> None:
+        if not iban:
+            return
+        norm = normalise_merchant(name)
+        if norm:
+            names_by_iban.setdefault(iban, set()).add(norm)
+
+    for tx in statement.transactions:
+        add(tx.counterparty_iban, tx.counterparty_name)
+    for accounts in existing_accounts.values():
+        for account in accounts:
+            add(account.iban, account.name)
+    return {iban for iban, names in names_by_iban.items() if len(names) > 1}
+
+
+def _with_merchant(name: str, description: str) -> str:
+    """Prefix the description with the real merchant, for shared/collector-IBAN transactions.
+
+    Idempotent and deterministic (so re-imports hash identically and still dedup): a no-op when the
+    merchant text is already present or empty. Result is clamped to Firefly's 255-char limit.
+    """
+    name = name.strip()
+    if not name or name.lower() in description.lower():
+        return description
+    return f"{name} — {description}".strip(" —")[:255]
+
+
 def _resolve_opposing_accounts(
     statement: BankStatement,
     writer: StatementWriter,
     savings_ibans: set[str],
     dry_run: bool,
+    existing_accounts: dict[str, list[FireflyAccount]],
     *,
     merchant_embedder: Embedder | None = None,
     merchant_gate: float = 0.93,
@@ -291,14 +346,11 @@ def _resolve_opposing_accounts(
 
     With ``merchant_embedder`` set (Phase 2.3, opt-in), the resolver gets an embedding last-resort
     step after IBAN/norm/fuzzy miss; without it (the default), resolution is the historical
-    IBAN/norm/fuzzy cascade.
+    IBAN/norm/fuzzy cascade. ``existing_accounts`` is empty on dry-run (no priming, no Firefly I/O).
     """
     resolver = AccountResolver(embedder=merchant_embedder, embedding_gate=merchant_gate)
-    if not dry_run:
-        for role in ("expense", "revenue"):
-            resolver.prime(
-                role, [(a.name, a.iban, a.id) for a in writer.list_accounts(role)]
-            )
+    for role, accounts in existing_accounts.items():
+        resolver.prime(role, [(a.name, a.iban, a.id) for a in accounts])
 
     opposing: dict[int, str] = {}
     for index, tx in enumerate(statement.transactions):

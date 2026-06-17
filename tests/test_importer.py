@@ -36,15 +36,17 @@ class FakeWriter:
         self,
         duplicate_dates: tuple[str, ...] = (),
         existing_asset_ibans: tuple[str, ...] = (),
+        existing_opposing: tuple[FireflyAccount, ...] = (),
     ) -> None:
         self.created_opposing: list[tuple[str, str | None, str]] = []
         self.created_txns: list[dict[str, object]] = []
         self.duplicate_dates = set(duplicate_dates)
         self.existing_asset_ibans = set(existing_asset_ibans)
+        self.existing_opposing = existing_opposing
         self._next = 1000
 
     def list_accounts(self, account_type: str) -> list[FireflyAccount]:
-        return []
+        return [a for a in self.existing_opposing if a.account_type == account_type]
 
     def ensure_asset_account(
         self,
@@ -97,6 +99,76 @@ def _statement() -> BankStatement:
             ),
         ],
     )
+
+
+def _collector_statement() -> BankStatement:
+    iban = "NL04ADYB2017400157"  # Adyen collector IBAN: many merchants settle through one account
+    return BankStatement(
+        account_iban="NL00BANK0123456789",
+        currency="EUR",
+        transactions=[
+            BankTransaction(
+                date="2026-04-01", amount=Decimal("33.90"), is_outgoing=True,
+                description="TFGSN7HWZJKMVNZ32K5B3 ref", counterparty_name="Zara.com",
+                counterparty_iban=iban,
+            ),
+            BankTransaction(
+                date="2026-04-02", amount=Decimal("331.60"), is_outgoing=True,
+                description="GXPZ6XDG478K4VQ9JEAJ ref", counterparty_name="PaylogicHoldingBV",
+                counterparty_iban=iban,
+            ),
+            BankTransaction(
+                date="2026-04-03", amount=Decimal("10.00"), is_outgoing=True,
+                description="boodschappen", counterparty_name="Albert Heijn",
+                counterparty_iban="NL12ABNA0123456789",
+            ),
+        ],
+    )
+
+
+def test_collector_iban_keeps_one_account_and_records_merchant_in_description() -> None:
+    writer = FakeWriter()
+    summary = import_statement(_collector_statement(), writer)
+    # The two Adyen merchants share one IBAN -> one shared expense account (Firefly enforces IBAN
+    # uniqueness), plus one for Albert Heijn = 2 expense accounts, not 3.
+    expense = [c for c in writer.created_opposing if c[2] == "expense"]
+    assert len(expense) == 2
+    # The shared account keeps the IBAN; the real merchant is preserved in the description instead.
+    zara = next(t for t in writer.created_txns if t["amount"] == "33.90")
+    paylogic = next(t for t in writer.created_txns if t["amount"] == "331.60")
+    assert zara["description"] == "Zara.com — TFGSN7HWZJKMVNZ32K5B3 ref"
+    assert paylogic["description"] == "PaylogicHoldingBV — GXPZ6XDG478K4VQ9JEAJ ref"
+    # A normal single-merchant IBAN is left untouched (no merchant prefix added).
+    ah = next(t for t in writer.created_txns if t["amount"] == "10.00")
+    assert ah["description"] == "boodschappen"
+    assert summary.created == 3
+
+
+def test_collector_iban_detected_from_existing_firefly_account() -> None:
+    # Firefly already holds "Zara.com" on the Adyen IBAN (from an earlier import). A new, single
+    # transaction with a DIFFERENT name on that same IBAN must still be treated as a collector IBAN,
+    # so the new merchant is recorded in the description and reuses the shared account by IBAN.
+    existing = FireflyAccount(
+        id="acc-zara", name="Zara.com", account_type="expense", iban="NL04ADYB2017400157",
+    )
+    writer = FakeWriter(existing_opposing=(existing,))
+    statement = BankStatement(
+        account_iban="NL00BANK0123456789",
+        currency="EUR",
+        transactions=[
+            BankTransaction(
+                date="2026-04-02", amount=Decimal("19.99"), is_outgoing=True,
+                description="opaque-ref", counterparty_name="KARWEI",
+                counterparty_iban="NL04ADYB2017400157",
+            ),
+        ],
+    )
+    import_statement(statement, writer)
+    row = writer.created_txns[0]
+    assert row["description"] == "KARWEI — opaque-ref"
+    # Resolved to the existing shared account by IBAN; no new expense account created.
+    assert writer.created_opposing == []
+    assert row["destination_id"] == "acc-zara"
 
 
 def test_dedups_albert_heijn_into_one_expense_account() -> None:
